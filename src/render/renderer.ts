@@ -16,27 +16,29 @@ export function renderGrid(
     const row = grid[r]!
     let html = ''
     let tw = 0
+    let spaceRun = 0
 
     for (let c = 0; c < row.length; c++) {
       const cell = row[c]!
 
       if (cell.text) {
+        // Flush space run
+        if (spaceRun > 0) { html += ' '.repeat(spaceRun); tw += spaceW * spaceRun; spaceRun = 0 }
         html += `<span class="label">${esc(cell.text)}</span>`
         tw += targetCellW
       } else if (cell.brightness > 0.025) {
+        if (spaceRun > 0) { html += ' '.repeat(spaceRun); tw += spaceW * spaceRun; spaceRun = 0 }
         const m = findBest(palette, cell.brightness, targetCellW)
         const ai = Math.max(1, Math.min(10, Math.round(cell.brightness * 10)))
         html += `<span class="${cell.color} ${wCls(m.weight, m.style)} a${ai}">${esc(m.char)}</span>`
         tw += m.width
       } else {
-        html += ' '
-        tw += spaceW
+        spaceRun++
       }
     }
+    if (spaceRun > 0) { html += ' '.repeat(spaceRun); tw += spaceW * spaceRun }
 
-    if (rowEls[r]) {
-      rowEls[r]!.innerHTML = html
-    }
+    if (rowEls[r]) rowEls[r]!.innerHTML = html
     rowWidths.push(tw)
   }
 

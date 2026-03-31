@@ -15,12 +15,12 @@ export type PaletteEntry = {
   brightness: number
 }
 
-// Detect responsive font size from CSS
+// Detect responsive font size from CSS — small for high density
 export function getResponsiveFontSize(): number {
   const w = window.innerWidth
-  if (w <= 600) return 9
-  if (w <= 1024) return 11
-  return 14
+  if (w <= 600) return 5
+  if (w <= 1024) return 6
+  return 8
 }
 
 export function getLineHeight(fontSize: number): number {

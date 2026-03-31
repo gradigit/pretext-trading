@@ -80,8 +80,8 @@ function initGrid() {
     avgCharW = palette.reduce((s, p) => s + p.width, 0) / palette.length
   }
 
-  COLS = Math.min(280, Math.floor(window.innerWidth / avgCharW))
-  ROWS = Math.min(100, Math.floor(window.innerHeight / lineHeight))
+  COLS = Math.min(380, Math.floor(window.innerWidth / avgCharW))
+  ROWS = Math.min(160, Math.floor(window.innerHeight / lineHeight))
   grid = createGrid(COLS, ROWS)
   vp = createViewport(COLS, ROWS, candles)
 
@@ -121,13 +121,14 @@ async function loadData() {
       }
       recomputeIndicators()
       updatePriceRange(vp, candles)
+      dirty = true
     })
   } catch { /* offline — fine */ }
 
   // Order book
   try {
     orderBook = await fetchOrderBook(currentPair.symbol, 20)
-    unsubBook = subscribeOrderBook(currentPair.symbol, (book) => { orderBook = book })
+    unsubBook = subscribeOrderBook(currentPair.symbol, (book) => { orderBook = book; dirty = true })
   } catch {
     orderBook = null
   }
@@ -179,22 +180,34 @@ window.addEventListener('wheel', (e) => {
   } else {
     pan(vp, e.deltaY > 0 ? 3 : -3, candles)
   }
+  dirty = true
 }, { passive: false })
 
 // --- Crosshair ---
 let mouseCol = -1, mouseRow = -1
+let dirty = true
 
 artEl.addEventListener('mousemove', (e: MouseEvent) => {
-  mouseCol = Math.floor(e.clientX / (window.innerWidth / COLS))
-  mouseRow = Math.floor(e.clientY / lineHeight)
+  const newCol = Math.floor(e.clientX / (window.innerWidth / COLS))
+  const newRow = Math.floor(e.clientY / lineHeight)
+  if (newCol !== mouseCol || newRow !== mouseRow) {
+    mouseCol = newCol; mouseRow = newRow; dirty = true
+  }
 })
-artEl.addEventListener('mouseleave', () => { mouseCol = -1; mouseRow = -1 })
+artEl.addEventListener('mouseleave', () => { mouseCol = -1; mouseRow = -1; dirty = true })
+
+function markDirty() { dirty = true }
+
+// Periodic refresh for live data (every 2s)
+setInterval(markDirty, 2000)
 
 // --- Render ---
 let fc = 0, lastFps = 0, dispFps = 0
 
 function render(now: number): void {
   if (COLS === 0 || candles.length === 0) { requestAnimationFrame(render); return }
+  if (!dirty) { requestAnimationFrame(render); return }
+  dirty = false
 
   const targetCellW = window.innerWidth / COLS
 
