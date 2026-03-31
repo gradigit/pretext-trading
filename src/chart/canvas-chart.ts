@@ -52,15 +52,15 @@ export function renderChartToCanvas(
   screenW: number,
   screenH: number,
 ): void {
-  // Render at full screen resolution for maximum quality
-  const w = screenW
-  const h = screenH
+  // Render at 3× grid resolution — excellent quality, fast downsampling
+  const SCALE = 3
+  const w = vp.cols * SCALE
+  const h = vp.rows * SCALE
   if (canvas.width !== w) canvas.width = w
   if (canvas.height !== h) canvas.height = h
 
-  // Pixel dimensions per character cell
-  const cellW = w / vp.cols
-  const cellH = h / vp.rows
+  const cellW = SCALE
+  const cellH = SCALE
 
   ctx.fillStyle = BG_COLOR
   ctx.fillRect(0, 0, w, h)
@@ -312,43 +312,35 @@ function renderOrderBook(
   }
 }
 
-// --- Downsample full-res canvas to character grid ---
+// --- Downsample 3x canvas to character grid ---
+const SCALE = 3
+
 export function readCanvasToGrid(
   ctx: CanvasRenderingContext2D,
   grid: PixelGrid,
-  screenW: number,
-  screenH: number,
 ): void {
   const { cols, rows } = grid
-  const imgData = ctx.getImageData(0, 0, screenW, screenH).data
-  const cellW = screenW / cols
-  const cellH = screenH / rows
+  const sw = cols * SCALE
+  const sh = rows * SCALE
+  const imgData = ctx.getImageData(0, 0, sw, sh).data
 
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
-      // Sample a block of pixels and average
-      const x0 = Math.floor(c * cellW)
-      const y0 = Math.floor(r * cellH)
-      const x1 = Math.min(screenW, Math.floor((c + 1) * cellW))
-      const y1 = Math.min(screenH, Math.floor((r + 1) * cellH))
-
-      let rSum = 0, gSum = 0, bSum = 0, count = 0
-      // Sample every other pixel for speed (still good quality)
-      const step = Math.max(1, Math.floor(Math.min(x1 - x0, y1 - y0) / 3))
-      for (let py = y0; py < y1; py += step) {
-        for (let px = x0; px < x1; px += step) {
-          const idx = (py * screenW + px) * 4
+      // Average the 3×3 pixel block
+      let rSum = 0, gSum = 0, bSum = 0
+      for (let dy = 0; dy < SCALE; dy++) {
+        for (let dx = 0; dx < SCALE; dx++) {
+          const idx = ((r * SCALE + dy) * sw + (c * SCALE + dx)) * 4
           rSum += imgData[idx]!
           gSum += imgData[idx + 1]!
           bSum += imgData[idx + 2]!
-          count++
         }
       }
 
-      if (count === 0) count = 1
-      const rr = rSum / count
-      const gg = gSum / count
-      const bb = bSum / count
+      const n = SCALE * SCALE
+      const rr = rSum / n
+      const gg = gSum / n
+      const bb = bSum / n
 
       const i = r * cols + c
       const mx = Math.max(rr, gg, bb)
