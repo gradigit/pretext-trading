@@ -1,50 +1,65 @@
 import type { Candle } from '../data/types.ts'
 
 export type Viewport = {
-  // Grid dimensions
   cols: number
   rows: number
-  // Data window
   startIndex: number
   visibleCount: number
-  // Price range
   priceMin: number
   priceMax: number
-  // Layout: rows
   chartRowStart: number
   chartRowEnd: number
   volumeRowStart: number
   volumeRowEnd: number
   rsiRowStart: number
   rsiRowEnd: number
-  // Layout: cols
   axisColStart: number
   chartColStart: number
-  chartColEnd: number     // where chart area ends (order book starts)
-  bookColStart: number    // order book start
-  bookColEnd: number      // order book end
-  // Candle geometry
+  chartColEnd: number
+  bookColStart: number
+  bookColEnd: number
+  showBook: boolean
+  showRsi: boolean
   colsPerCandle: number
 }
 
-const PRICE_AXIS_COLS = 10
-const BOOK_COLS_RATIO = 0.15 // 15% of width for order book
 const PRICE_PADDING = 0.05
 
 export function createViewport(cols: number, rows: number, candles: Candle[], startIndex?: number): Viewport {
-  const chartColStart = PRICE_AXIS_COLS
-  const bookCols = Math.max(16, Math.floor(cols * BOOK_COLS_RATIO))
+  const isNarrow = cols < 80
+  const isMedium = cols < 140
+
+  // Responsive price axis width
+  const priceAxisCols = isNarrow ? 7 : 10
+  const chartColStart = priceAxisCols
+
+  // Hide order book on narrow screens
+  const showBook = !isNarrow && !isMedium
+  const bookCols = showBook ? Math.max(16, Math.floor(cols * 0.15)) : 0
   const chartColEnd = cols - bookCols
+
   const chartCols = chartColEnd - chartColStart
-  const colsPerCandle = Math.max(3, Math.min(7, Math.floor(chartCols / 60)))
+  const colsPerCandle = Math.max(2, Math.min(7, Math.floor(chartCols / (isNarrow ? 30 : 60))))
   const visibleCount = Math.floor(chartCols / colsPerCandle)
   const si = startIndex ?? Math.max(0, candles.length - visibleCount)
 
-  // Row allocation: 55% chart, 12% volume, 2% gap, 15% RSI, rest time axis
-  const chartRowEnd = Math.floor(rows * 0.55)
-  const volumeRowEnd = Math.floor(rows * 0.68)
-  const rsiRowStart = Math.floor(rows * 0.70)
-  const rsiRowEnd = Math.floor(rows * 0.88)
+  // Hide RSI on very narrow screens
+  const showRsi = rows > 30
+
+  // Row allocation — responsive
+  let chartRowEnd: number, volumeRowEnd: number, rsiRowStart: number, rsiRowEnd: number
+
+  if (showRsi) {
+    chartRowEnd = Math.floor(rows * (showBook ? 0.55 : 0.58))
+    volumeRowEnd = Math.floor(rows * (showBook ? 0.68 : 0.72))
+    rsiRowStart = volumeRowEnd + 2
+    rsiRowEnd = Math.floor(rows * 0.90)
+  } else {
+    chartRowEnd = Math.floor(rows * 0.70)
+    volumeRowEnd = Math.floor(rows * 0.88)
+    rsiRowStart = volumeRowEnd
+    rsiRowEnd = volumeRowEnd
+  }
 
   const vp: Viewport = {
     cols, rows,
@@ -59,8 +74,10 @@ export function createViewport(cols: number, rows: number, candles: Candle[], st
     axisColStart: 0,
     chartColStart,
     chartColEnd,
-    bookColStart: chartColEnd + 1,
+    bookColStart: showBook ? chartColEnd + 1 : cols,
     bookColEnd: cols,
+    showBook,
+    showRsi,
     colsPerCandle,
   }
 
@@ -90,7 +107,7 @@ export function pan(vp: Viewport, delta: number, candles: Candle[]): void {
 export function zoom(vp: Viewport, factor: number, candles: Candle[]): void {
   const centerCandle = vp.startIndex + Math.floor(vp.visibleCount / 2)
   const chartCols = vp.chartColEnd - vp.chartColStart
-  const newCpc = Math.max(3, Math.min(11, Math.round(vp.colsPerCandle * factor)))
+  const newCpc = Math.max(2, Math.min(11, Math.round(vp.colsPerCandle * factor)))
   if (newCpc === vp.colsPerCandle) return
   vp.colsPerCandle = newCpc
   vp.visibleCount = Math.floor(chartCols / vp.colsPerCandle)

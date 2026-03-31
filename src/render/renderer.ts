@@ -1,15 +1,15 @@
 import type { CellInfo } from '../chart/compositor.ts'
 import type { PaletteEntry } from './palette.ts'
-import { findBest, esc, wCls, spaceWidth, FONT_SIZE } from './palette.ts'
-
-const spaceW = spaceWidth(FONT_SIZE)
+import { findBest, esc, wCls, spaceWidth } from './palette.ts'
 
 export function renderGrid(
   grid: CellInfo[][],
   rowEls: HTMLDivElement[],
   palette: PaletteEntry[],
   targetCellW: number,
+  fontSize: number,
 ): void {
+  const spaceW = spaceWidth(fontSize)
   const rowWidths: number[] = []
 
   for (let r = 0; r < grid.length; r++) {
@@ -21,9 +21,8 @@ export function renderGrid(
       const cell = row[c]!
 
       if (cell.text) {
-        // Axis label: literal text character
         html += `<span class="label">${esc(cell.text)}</span>`
-        tw += targetCellW // approximate width for labels
+        tw += targetCellW
       } else if (cell.brightness > 0.025) {
         const m = findBest(palette, cell.brightness, targetCellW)
         const ai = Math.max(1, Math.min(10, Math.round(cell.brightness * 10)))
@@ -41,7 +40,7 @@ export function renderGrid(
     rowWidths.push(tw)
   }
 
-  // Center rows (fluid-smoke technique)
+  // Center rows
   const maxW = Math.max(...rowWidths)
   const blockOffset = Math.max(0, (window.innerWidth - maxW) / 2)
   for (let r = 0; r < rowEls.length; r++) {

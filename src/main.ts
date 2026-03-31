@@ -1,4 +1,4 @@
-import { buildPalette, LINE_HEIGHT } from './render/palette.ts'
+import { buildPalette, getResponsiveFontSize, getLineHeight } from './render/palette.ts'
 import { renderGrid } from './render/renderer.ts'
 import { createGrid, clearGrid } from './chart/compositor.ts'
 import { createViewport, pan, zoom, updatePriceRange } from './chart/viewport.ts'
@@ -41,9 +41,11 @@ const artEl = document.getElementById('art')!
 const statsEl = document.getElementById('stats')!
 const controlsEl = document.getElementById('controls')!
 
-// --- Palette (one-time) ---
+// --- Palette (built per font size) ---
+let currentFontSize = getResponsiveFontSize()
+let lineHeight = getLineHeight(currentFontSize)
 const t0 = performance.now()
-const palette = buildPalette()
+let palette = buildPalette(currentFontSize)
 const paletteMs = (performance.now() - t0).toFixed(0)
 
 // --- Data ---
@@ -62,15 +64,24 @@ function recomputeIndicators() {
 }
 
 // --- Grid ---
-const avgCharW = palette.reduce((s, p) => s + p.width, 0) / palette.length
+let avgCharW = palette.reduce((s, p) => s + p.width, 0) / palette.length
 let COLS = 0, ROWS = 0
 let rowEls: HTMLDivElement[] = []
 let grid = createGrid(0, 0)
 let vp = createViewport(0, 0, candles)
 
 function initGrid() {
+  // Check if font size changed (responsive breakpoint crossed)
+  const newFontSize = getResponsiveFontSize()
+  if (newFontSize !== currentFontSize) {
+    currentFontSize = newFontSize
+    lineHeight = getLineHeight(currentFontSize)
+    palette = buildPalette(currentFontSize)
+    avgCharW = palette.reduce((s, p) => s + p.width, 0) / palette.length
+  }
+
   COLS = Math.min(280, Math.floor(window.innerWidth / avgCharW))
-  ROWS = Math.min(100, Math.floor(window.innerHeight / LINE_HEIGHT))
+  ROWS = Math.min(100, Math.floor(window.innerHeight / lineHeight))
   grid = createGrid(COLS, ROWS)
   vp = createViewport(COLS, ROWS, candles)
 
@@ -79,7 +90,7 @@ function initGrid() {
   for (let r = 0; r < ROWS; r++) {
     const div = document.createElement('div')
     div.className = 'r'
-    div.style.height = div.style.lineHeight = LINE_HEIGHT + 'px'
+    div.style.height = div.style.lineHeight = lineHeight + 'px'
     artEl.appendChild(div)
     rowEls.push(div)
   }
@@ -175,7 +186,7 @@ let mouseCol = -1, mouseRow = -1
 
 artEl.addEventListener('mousemove', (e: MouseEvent) => {
   mouseCol = Math.floor(e.clientX / (window.innerWidth / COLS))
-  mouseRow = Math.floor(e.clientY / LINE_HEIGHT)
+  mouseRow = Math.floor(e.clientY / lineHeight)
 })
 artEl.addEventListener('mouseleave', () => { mouseCol = -1; mouseRow = -1 })
 
@@ -197,10 +208,14 @@ function render(now: number): void {
   renderCandles(grid, candles, vp)
 
   // RSI sub-panel
-  renderRSI(grid, rsi14, vp, vp.rsiRowStart, vp.rsiRowEnd)
+  if (vp.showRsi) {
+    renderRSI(grid, rsi14, vp, vp.rsiRowStart, vp.rsiRowEnd)
+  }
 
-  // Order book (right side)
-  renderOrderBook(grid, orderBook, vp.bookColStart, vp.bookColEnd, vp.chartRowStart, vp.chartRowEnd)
+  // Order book (right side, desktop only)
+  if (vp.showBook) {
+    renderOrderBook(grid, orderBook, vp.bookColStart, vp.bookColEnd, vp.chartRowStart, vp.chartRowEnd)
+  }
 
   // Crosshair
   if (mouseRow >= 0 && mouseCol >= 0) {
@@ -218,7 +233,7 @@ function render(now: number): void {
     }
   }
 
-  renderGrid(grid, rowEls, palette, targetCellW)
+  renderGrid(grid, rowEls, palette, targetCellW, currentFontSize)
 
   // Stats
   fc++

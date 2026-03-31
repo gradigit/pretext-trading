@@ -1,8 +1,6 @@
 import { prepareWithSegments } from '@chenglou/pretext'
 
 // --- Configuration ---
-export const FONT_SIZE = 14
-export const LINE_HEIGHT = 17
 export const PROP_FAMILY = 'Georgia, Palatino, "Times New Roman", serif'
 const CHARSET = ' .,:;!+-=*#@%&abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
 const WEIGHTS = [300, 500, 800] as const
@@ -15,6 +13,18 @@ export type PaletteEntry = {
   font: string
   width: number
   brightness: number
+}
+
+// Detect responsive font size from CSS
+export function getResponsiveFontSize(): number {
+  const w = window.innerWidth
+  if (w <= 600) return 9
+  if (w <= 1024) return 11
+  return 14
+}
+
+export function getLineHeight(fontSize: number): number {
+  return Math.round(fontSize * 1.21)
 }
 
 // --- Brightness estimation via offscreen canvas ---
@@ -34,12 +44,12 @@ function estimateBrightness(ch: string, font: string): number {
   return sum / (255 * 784)
 }
 
-// --- Build palette ---
-export function buildPalette(): PaletteEntry[] {
+// --- Build palette for a given font size ---
+export function buildPalette(fontSize: number): PaletteEntry[] {
   const palette: PaletteEntry[] = []
   for (const style of FONT_STYLES) {
     for (const weight of WEIGHTS) {
-      const font = `${style === 'italic' ? 'italic ' : ''}${weight} ${FONT_SIZE}px ${PROP_FAMILY}`
+      const font = `${style === 'italic' ? 'italic ' : ''}${weight} ${fontSize}px ${PROP_FAMILY}`
       for (const ch of CHARSET) {
         if (ch === ' ') continue
         const p = prepareWithSegments(ch, font)
@@ -89,35 +99,6 @@ export function esc(c: string): string {
 export function wCls(w: number, s: string): string {
   const wc = w === 300 ? 'w3' : w === 500 ? 'w5' : 'w8'
   return s === 'italic' ? wc + ' it' : wc
-}
-
-// --- Color-specific brightness lookup tables ---
-export type ColorLookupEntry = {
-  html: string
-  width: number
-}
-
-export function buildColorLookup(
-  palette: PaletteEntry[],
-  colorClass: string,
-  targetCellW: number,
-  spaceW: number
-): ColorLookupEntry[] {
-  const lookup: ColorLookupEntry[] = []
-  for (let byte = 0; byte < 256; byte++) {
-    const brightness = byte / 255
-    if (brightness < 0.025) {
-      lookup.push({ html: ' ', width: spaceW })
-      continue
-    }
-    const match = findBest(palette, brightness, targetCellW)
-    const ai = Math.max(1, Math.min(10, Math.round(brightness * 10)))
-    lookup.push({
-      html: `<span class="${colorClass} ${wCls(match.weight, match.style)} a${ai}">${esc(match.char)}</span>`,
-      width: match.width,
-    })
-  }
-  return lookup
 }
 
 // Space width approximation (matches fluid-smoke)

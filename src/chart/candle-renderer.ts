@@ -4,8 +4,8 @@ import type { CellInfo } from './compositor.ts'
 import { setCell } from './compositor.ts'
 import { priceToRow, candleColStart } from './geometry.ts'
 
-const BODY_BRIGHTNESS = 0.85
-const WICK_BRIGHTNESS = 0.40
+const BODY_BRIGHTNESS = 0.95
+const WICK_BRIGHTNESS = 0.55
 
 export function renderCandles(grid: CellInfo[][], candles: Candle[], vp: Viewport): void {
   const end = Math.min(vp.startIndex + vp.visibleCount, candles.length)
@@ -23,13 +23,14 @@ export function renderCandles(grid: CellInfo[][], candles: Candle[], vp: Viewpor
     const bodyTop = Math.min(rowOpen, rowClose)
     const bodyBottom = Math.max(rowOpen, rowClose)
 
-    // Body column is in the middle of the candle allocation
     const bodyCol = colBase + Math.floor(vp.colsPerCandle / 2)
 
-    // Fill wider body for wider candle allocations
-    const bodyHalfWidth = Math.max(0, Math.floor((vp.colsPerCandle - 2) / 2))
+    // Body fills most of the candle allocation (leave 1 gap col on each side at most)
+    const bodyHalfWidth = vp.colsPerCandle <= 2
+      ? 0
+      : Math.max(0, Math.floor((vp.colsPerCandle - 1) / 2))
 
-    // Wick: from high to bodyTop, and from bodyBottom to low
+    // Wick
     for (let r = rowHigh; r < bodyTop; r++) {
       setCell(grid, r, bodyCol, WICK_BRIGHTNESS, color, 60)
     }
@@ -37,10 +38,12 @@ export function renderCandles(grid: CellInfo[][], candles: Candle[], vp: Viewpor
       setCell(grid, r, bodyCol, WICK_BRIGHTNESS, color, 60)
     }
 
-    // Body: fill multiple columns for wider candles
+    // Body — fill wide, with slight brightness variation for depth
     for (let r = bodyTop; r <= bodyBottom; r++) {
       for (let dc = -bodyHalfWidth; dc <= bodyHalfWidth; dc++) {
-        setCell(grid, r, bodyCol + dc, BODY_BRIGHTNESS, color, 80)
+        // Slightly dimmer at edges for a rounded look
+        const edgeFade = bodyHalfWidth > 0 ? 1.0 - Math.abs(dc) / (bodyHalfWidth + 2) * 0.15 : 1.0
+        setCell(grid, r, bodyCol + dc, BODY_BRIGHTNESS * edgeFade, color, 80)
       }
     }
 
