@@ -6,9 +6,12 @@ import { renderCandles } from './chart/candle-renderer.ts'
 import { renderVolume } from './chart/volume-renderer.ts'
 import { renderAxes } from './chart/axis-renderer.ts'
 import { renderIndicator } from './chart/indicator-renderer.ts'
+import { renderOrderBook } from './chart/orderbook-renderer.ts'
+import { renderRSI } from './chart/rsi-renderer.ts'
 import { fetchCandles, subscribeKlines } from './data/feed.ts'
+import { fetchOrderBook, subscribeOrderBook, type OrderBook } from './data/orderbook.ts'
 import { generateSampleData } from './data/sample.ts'
-import { sma } from './data/indicators.ts'
+import { sma, rsi } from './data/indicators.ts'
 import type { Candle } from './data/types.ts'
 
 // --- Config ---
@@ -31,39 +34,42 @@ const INTERVALS: IntervalConfig[] = [
 ]
 
 let currentPair = PAIRS[0]!
-let currentInterval = INTERVALS[3]! // default 1h
+let currentInterval = INTERVALS[3]!
 
-// --- DOM setup ---
+// --- DOM ---
 const artEl = document.getElementById('art')!
 const statsEl = document.getElementById('stats')!
 const controlsEl = document.getElementById('controls')!
 
-// --- Build palette (one-time) ---
+// --- Palette (one-time) ---
 const t0 = performance.now()
 const palette = buildPalette()
 const paletteMs = (performance.now() - t0).toFixed(0)
 
-// --- Data state ---
+// --- Data ---
 let candles: Candle[] = []
 let sma20: (number | null)[] = []
 let sma50: (number | null)[] = []
-let unsubscribeWs: (() => void) | null = null
+let rsi14: (number | null)[] = []
+let orderBook: OrderBook | null = null
+let unsubKline: (() => void) | null = null
+let unsubBook: (() => void) | null = null
 
 function recomputeIndicators() {
   sma20 = sma(candles, 20)
   sma50 = sma(candles, 50)
+  rsi14 = rsi(candles, 14)
 }
 
-// --- Grid state ---
+// --- Grid ---
 const avgCharW = palette.reduce((s, p) => s + p.width, 0) / palette.length
-let COLS = 0
-let ROWS = 0
+let COLS = 0, ROWS = 0
 let rowEls: HTMLDivElement[] = []
 let grid = createGrid(0, 0)
 let vp = createViewport(0, 0, candles)
 
 function initGrid() {
-  COLS = Math.min(250, Math.floor(window.innerWidth / avgCharW))
+  COLS = Math.min(280, Math.floor(window.innerWidth / avgCharW))
   ROWS = Math.min(100, Math.floor(window.innerHeight / LINE_HEIGHT))
   grid = createGrid(COLS, ROWS)
   vp = createViewport(COLS, ROWS, candles)
@@ -79,48 +85,49 @@ function initGrid() {
   }
 }
 
-// --- Load real data from Binance ---
+// --- Load data ---
 async function loadData() {
-  // Unsubscribe from previous WebSocket
-  if (unsubscribeWs) { unsubscribeWs(); unsubscribeWs = null }
+  if (unsubKline) { unsubKline(); unsubKline = null }
+  if (unsubBook) { unsubBook(); unsubBook = null }
 
   try {
     candles = await fetchCandles(currentPair.symbol, currentInterval.interval, 500)
   } catch {
-    // Fallback to synthetic data if Binance is unreachable
     candles = generateSampleData(500)
   }
-
   recomputeIndicators()
   initGrid()
 
-  // Subscribe to live updates
+  // Live kline updates
   try {
-    unsubscribeWs = subscribeKlines(currentPair.symbol, currentInterval.interval, (candle, isClosed) => {
+    unsubKline = subscribeKlines(currentPair.symbol, currentInterval.interval, (candle, isClosed) => {
       if (candles.length === 0) return
       const last = candles[candles.length - 1]!
       if (candle.time === last.time) {
-        // Update current candle
         candles[candles.length - 1] = candle
       } else if (isClosed || candle.time > last.time) {
-        // New candle
         candles.push(candle)
       }
       recomputeIndicators()
       updatePriceRange(vp, candles)
     })
+  } catch { /* offline — fine */ }
+
+  // Order book
+  try {
+    orderBook = await fetchOrderBook(currentPair.symbol, 20)
+    unsubBook = subscribeOrderBook(currentPair.symbol, (book) => { orderBook = book })
   } catch {
-    // WebSocket not available — that's fine, static data works
+    orderBook = null
   }
 }
 
-// --- Controls UI ---
+// --- Controls ---
 function buildControls() {
   const pairSelect = document.createElement('select')
   for (const p of PAIRS) {
     const opt = document.createElement('option')
-    opt.value = p.symbol
-    opt.textContent = p.label
+    opt.value = p.symbol; opt.textContent = p.label
     if (p.symbol === currentPair.symbol) opt.selected = true
     pairSelect.appendChild(opt)
   }
@@ -132,8 +139,7 @@ function buildControls() {
   const intSelect = document.createElement('select')
   for (const iv of INTERVALS) {
     const opt = document.createElement('option')
-    opt.value = iv.interval
-    opt.textContent = iv.label
+    opt.value = iv.interval; opt.textContent = iv.label
     if (iv.interval === currentInterval.interval) opt.selected = true
     intSelect.appendChild(opt)
   }
@@ -147,75 +153,67 @@ function buildControls() {
   controlsEl.style.display = 'block'
 }
 
-// --- Resize handling ---
+// --- Resize ---
 let resizeTimer = 0
 window.addEventListener('resize', () => {
   clearTimeout(resizeTimer)
   resizeTimer = window.setTimeout(initGrid, 150)
 })
 
-// --- Interaction: scroll and zoom ---
+// --- Scroll/zoom ---
 window.addEventListener('wheel', (e) => {
   e.preventDefault()
   if (e.ctrlKey || e.metaKey) {
-    const factor = e.deltaY > 0 ? 1.2 : 0.8
-    zoom(vp, factor, candles)
+    zoom(vp, e.deltaY > 0 ? 1.2 : 0.8, candles)
   } else {
-    const delta = e.deltaY > 0 ? 3 : -3
-    pan(vp, delta, candles)
+    pan(vp, e.deltaY > 0 ? 3 : -3, candles)
   }
 }, { passive: false })
 
-// --- Crosshair state ---
-let mouseCol = -1
-let mouseRow = -1
+// --- Crosshair ---
+let mouseCol = -1, mouseRow = -1
 
 artEl.addEventListener('mousemove', (e: MouseEvent) => {
   mouseCol = Math.floor(e.clientX / (window.innerWidth / COLS))
   mouseRow = Math.floor(e.clientY / LINE_HEIGHT)
 })
+artEl.addEventListener('mouseleave', () => { mouseCol = -1; mouseRow = -1 })
 
-artEl.addEventListener('mouseleave', () => {
-  mouseCol = -1
-  mouseRow = -1
-})
-
-// --- Render loop ---
-let fc = 0
-let lastFps = 0
-let dispFps = 0
+// --- Render ---
+let fc = 0, lastFps = 0, dispFps = 0
 
 function render(now: number): void {
-  if (COLS === 0 || candles.length === 0) {
-    requestAnimationFrame(render)
-    return
-  }
+  if (COLS === 0 || candles.length === 0) { requestAnimationFrame(render); return }
 
   const targetCellW = window.innerWidth / COLS
 
   clearGrid(grid)
+
+  // Chart layers
   renderAxes(grid, candles, vp)
   renderVolume(grid, candles, vp)
   renderIndicator(grid, sma50, vp, 'ma2')
   renderIndicator(grid, sma20, vp, 'ma1')
   renderCandles(grid, candles, vp)
 
+  // RSI sub-panel
+  renderRSI(grid, rsi14, vp, vp.rsiRowStart, vp.rsiRowEnd)
+
+  // Order book (right side)
+  renderOrderBook(grid, orderBook, vp.bookColStart, vp.bookColEnd, vp.chartRowStart, vp.chartRowEnd)
+
   // Crosshair
   if (mouseRow >= 0 && mouseCol >= 0) {
-    for (let c = vp.chartColStart; c < COLS; c++) {
+    for (let c = vp.chartColStart; c < vp.chartColEnd; c++) {
       const cell = grid[mouseRow]?.[c]
       if (cell && cell.priority < 90) {
-        cell.brightness = 0.25
-        cell.color = 'xhair'
-        cell.priority = 90
+        cell.brightness = 0.25; cell.color = 'xhair'; cell.priority = 90
       }
     }
-    for (let r = 0; r < vp.volumeRowEnd; r++) {
+    for (let r = 0; r < vp.rsiRowEnd; r++) {
       const cell = grid[r]?.[mouseCol]
       if (cell && cell.priority < 90) {
-        cell.brightness = 0.15
-        cell.color = 'xhair'
-        cell.priority = 90
+        cell.brightness = 0.15; cell.color = 'xhair'; cell.priority = 90
       }
     }
   }
@@ -226,11 +224,12 @@ function render(now: number): void {
   fc++
   if (now - lastFps > 500) {
     dispFps = Math.round(fc / ((now - lastFps) / 1000))
-    fc = 0
-    lastFps = now
+    fc = 0; lastFps = now
     const last = candles[candles.length - 1]
     const priceStr = last ? last.close.toLocaleString() : '—'
-    statsEl.textContent = `${currentPair.label} ${currentInterval.label} | ${priceStr} | ${COLS}×${ROWS} | ${dispFps} fps`
+    const rsiVal = rsi14[rsi14.length - 1]
+    const rsiStr = rsiVal !== null ? `RSI ${rsiVal.toFixed(1)}` : ''
+    statsEl.textContent = `${currentPair.label} ${currentInterval.label} | ${priceStr} | ${rsiStr} | ${COLS}×${ROWS} | ${dispFps} fps`
   }
 
   requestAnimationFrame(render)
