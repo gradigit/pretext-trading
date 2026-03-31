@@ -1,4 +1,4 @@
-import { buildPalette, FONT_SIZE, LINE_HEIGHT, spaceWidth } from './render/palette.ts'
+import { buildPalette, LINE_HEIGHT } from './render/palette.ts'
 import { renderGrid } from './render/renderer.ts'
 import { createGrid, clearGrid } from './chart/compositor.ts'
 import { createViewport, pan, zoom, updatePriceRange } from './chart/viewport.ts'
@@ -6,22 +6,53 @@ import { renderCandles } from './chart/candle-renderer.ts'
 import { renderVolume } from './chart/volume-renderer.ts'
 import { renderAxes } from './chart/axis-renderer.ts'
 import { renderIndicator } from './chart/indicator-renderer.ts'
+import { fetchCandles, subscribeKlines } from './data/feed.ts'
 import { generateSampleData } from './data/sample.ts'
 import { sma } from './data/indicators.ts'
+import type { Candle } from './data/types.ts'
+
+// --- Config ---
+type PairConfig = { symbol: string; label: string }
+type IntervalConfig = { interval: '1m' | '5m' | '15m' | '1h' | '4h' | '1d'; label: string }
+
+const PAIRS: PairConfig[] = [
+  { symbol: 'BTCUSDT', label: 'BTC/USDT' },
+  { symbol: 'ETHUSDT', label: 'ETH/USDT' },
+  { symbol: 'SOLUSDT', label: 'SOL/USDT' },
+]
+
+const INTERVALS: IntervalConfig[] = [
+  { interval: '1m', label: '1m' },
+  { interval: '5m', label: '5m' },
+  { interval: '15m', label: '15m' },
+  { interval: '1h', label: '1h' },
+  { interval: '4h', label: '4h' },
+  { interval: '1d', label: '1D' },
+]
+
+let currentPair = PAIRS[0]!
+let currentInterval = INTERVALS[3]! // default 1h
 
 // --- DOM setup ---
 const artEl = document.getElementById('art')!
 const statsEl = document.getElementById('stats')!
+const controlsEl = document.getElementById('controls')!
 
-// --- Build palette (one-time, ~50-200ms) ---
+// --- Build palette (one-time) ---
 const t0 = performance.now()
 const palette = buildPalette()
 const paletteMs = (performance.now() - t0).toFixed(0)
 
-// --- Load data ---
-const candles = generateSampleData(600)
-const sma20 = sma(candles, 20)
-const sma50 = sma(candles, 50)
+// --- Data state ---
+let candles: Candle[] = []
+let sma20: (number | null)[] = []
+let sma50: (number | null)[] = []
+let unsubscribeWs: (() => void) | null = null
+
+function recomputeIndicators() {
+  sma20 = sma(candles, 20)
+  sma50 = sma(candles, 50)
+}
 
 // --- Grid state ---
 const avgCharW = palette.reduce((s, p) => s + p.width, 0) / palette.length
@@ -48,6 +79,74 @@ function initGrid() {
   }
 }
 
+// --- Load real data from Binance ---
+async function loadData() {
+  // Unsubscribe from previous WebSocket
+  if (unsubscribeWs) { unsubscribeWs(); unsubscribeWs = null }
+
+  try {
+    candles = await fetchCandles(currentPair.symbol, currentInterval.interval, 500)
+  } catch {
+    // Fallback to synthetic data if Binance is unreachable
+    candles = generateSampleData(500)
+  }
+
+  recomputeIndicators()
+  initGrid()
+
+  // Subscribe to live updates
+  try {
+    unsubscribeWs = subscribeKlines(currentPair.symbol, currentInterval.interval, (candle, isClosed) => {
+      if (candles.length === 0) return
+      const last = candles[candles.length - 1]!
+      if (candle.time === last.time) {
+        // Update current candle
+        candles[candles.length - 1] = candle
+      } else if (isClosed || candle.time > last.time) {
+        // New candle
+        candles.push(candle)
+      }
+      recomputeIndicators()
+      updatePriceRange(vp, candles)
+    })
+  } catch {
+    // WebSocket not available — that's fine, static data works
+  }
+}
+
+// --- Controls UI ---
+function buildControls() {
+  const pairSelect = document.createElement('select')
+  for (const p of PAIRS) {
+    const opt = document.createElement('option')
+    opt.value = p.symbol
+    opt.textContent = p.label
+    if (p.symbol === currentPair.symbol) opt.selected = true
+    pairSelect.appendChild(opt)
+  }
+  pairSelect.addEventListener('change', () => {
+    currentPair = PAIRS.find(p => p.symbol === pairSelect.value) ?? PAIRS[0]!
+    loadData()
+  })
+
+  const intSelect = document.createElement('select')
+  for (const iv of INTERVALS) {
+    const opt = document.createElement('option')
+    opt.value = iv.interval
+    opt.textContent = iv.label
+    if (iv.interval === currentInterval.interval) opt.selected = true
+    intSelect.appendChild(opt)
+  }
+  intSelect.addEventListener('change', () => {
+    currentInterval = INTERVALS.find(i => i.interval === intSelect.value) ?? INTERVALS[3]!
+    loadData()
+  })
+
+  controlsEl.appendChild(pairSelect)
+  controlsEl.appendChild(intSelect)
+  controlsEl.style.display = 'block'
+}
+
 // --- Resize handling ---
 let resizeTimer = 0
 window.addEventListener('resize', () => {
@@ -55,17 +154,13 @@ window.addEventListener('resize', () => {
   resizeTimer = window.setTimeout(initGrid, 150)
 })
 
-initGrid()
-
 // --- Interaction: scroll and zoom ---
 window.addEventListener('wheel', (e) => {
   e.preventDefault()
   if (e.ctrlKey || e.metaKey) {
-    // Zoom
     const factor = e.deltaY > 0 ? 1.2 : 0.8
     zoom(vp, factor, candles)
   } else {
-    // Pan
     const delta = e.deltaY > 0 ? 3 : -3
     pan(vp, delta, candles)
   }
@@ -91,9 +186,13 @@ let lastFps = 0
 let dispFps = 0
 
 function render(now: number): void {
+  if (COLS === 0 || candles.length === 0) {
+    requestAnimationFrame(render)
+    return
+  }
+
   const targetCellW = window.innerWidth / COLS
 
-  // Clear and composite layers
   clearGrid(grid)
   renderAxes(grid, candles, vp)
   renderVolume(grid, candles, vp)
@@ -121,19 +220,22 @@ function render(now: number): void {
     }
   }
 
-  // Render to DOM
   renderGrid(grid, rowEls, palette, targetCellW)
 
-  // FPS counter
+  // Stats
   fc++
   if (now - lastFps > 500) {
     dispFps = Math.round(fc / ((now - lastFps) / 1000))
     fc = 0
     lastFps = now
-    statsEl.textContent = `${COLS}×${ROWS} | ${palette.length} chars | ${dispFps} fps | palette ${paletteMs}ms`
+    const last = candles[candles.length - 1]
+    const priceStr = last ? last.close.toLocaleString() : '—'
+    statsEl.textContent = `${currentPair.label} ${currentInterval.label} | ${priceStr} | ${COLS}×${ROWS} | ${dispFps} fps`
   }
 
   requestAnimationFrame(render)
 }
 
-requestAnimationFrame(render)
+// --- Start ---
+buildControls()
+loadData().then(() => requestAnimationFrame(render))
