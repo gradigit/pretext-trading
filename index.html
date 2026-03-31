@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pretext Trading — ASCII Crypto Charts</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100vw; height: 100vh; overflow: hidden; background: #06060a; }
+    #art { width: 100%; height: 100%; }
+
+    /* Row base */
+    .r {
+      white-space: pre;
+      overflow: hidden;
+      font-family: Georgia, Palatino, "Times New Roman", serif;
+      font-size: 14px;
+    }
+
+    /* Font weights */
+    .w3 { font-weight: 300; }
+    .w5 { font-weight: 500; }
+    .w8 { font-weight: 800; }
+    .it { font-style: italic; }
+
+    /* Bull (green) alpha ramp */
+    .bull.a1  { color: rgba(0,200,83,0.10); }
+    .bull.a2  { color: rgba(0,200,83,0.20); }
+    .bull.a3  { color: rgba(0,200,83,0.30); }
+    .bull.a4  { color: rgba(0,200,83,0.40); }
+    .bull.a5  { color: rgba(0,200,83,0.50); }
+    .bull.a6  { color: rgba(0,200,83,0.60); }
+    .bull.a7  { color: rgba(0,200,83,0.70); }
+    .bull.a8  { color: rgba(0,200,83,0.80); }
+    .bull.a9  { color: rgba(0,200,83,0.90); }
+    .bull.a10 { color: rgba(0,200,83,1.00); }
+
+    /* Bear (red) alpha ramp */
+    .bear.a1  { color: rgba(255,23,68,0.10); }
+    .bear.a2  { color: rgba(255,23,68,0.20); }
+    .bear.a3  { color: rgba(255,23,68,0.30); }
+    .bear.a4  { color: rgba(255,23,68,0.40); }
+    .bear.a5  { color: rgba(255,23,68,0.50); }
+    .bear.a6  { color: rgba(255,23,68,0.60); }
+    .bear.a7  { color: rgba(255,23,68,0.70); }
+    .bear.a8  { color: rgba(255,23,68,0.80); }
+    .bear.a9  { color: rgba(255,23,68,0.90); }
+    .bear.a10 { color: rgba(255,23,68,1.00); }
+
+    /* Grid (subtle gray) alpha ramp */
+    .grid.a1  { color: rgba(255,255,255,0.03); }
+    .grid.a2  { color: rgba(255,255,255,0.05); }
+    .grid.a3  { color: rgba(255,255,255,0.07); }
+    .grid.a4  { color: rgba(255,255,255,0.09); }
+    .grid.a5  { color: rgba(255,255,255,0.12); }
+    .grid.a6  { color: rgba(255,255,255,0.15); }
+    .grid.a7  { color: rgba(255,255,255,0.18); }
+    .grid.a8  { color: rgba(255,255,255,0.22); }
+    .grid.a9  { color: rgba(255,255,255,0.26); }
+    .grid.a10 { color: rgba(255,255,255,0.30); }
+
+    /* MA1 (blue) alpha ramp */
+    .ma1.a1  { color: rgba(66,165,245,0.10); }
+    .ma1.a2  { color: rgba(66,165,245,0.20); }
+    .ma1.a3  { color: rgba(66,165,245,0.30); }
+    .ma1.a4  { color: rgba(66,165,245,0.40); }
+    .ma1.a5  { color: rgba(66,165,245,0.50); }
+    .ma1.a6  { color: rgba(66,165,245,0.60); }
+    .ma1.a7  { color: rgba(66,165,245,0.70); }
+    .ma1.a8  { color: rgba(66,165,245,0.80); }
+    .ma1.a9  { color: rgba(66,165,245,0.90); }
+    .ma1.a10 { color: rgba(66,165,245,1.00); }
+
+    /* MA2 (orange) alpha ramp */
+    .ma2.a1  { color: rgba(255,167,38,0.10); }
+    .ma2.a2  { color: rgba(255,167,38,0.20); }
+    .ma2.a3  { color: rgba(255,167,38,0.30); }
+    .ma2.a4  { color: rgba(255,167,38,0.40); }
+    .ma2.a5  { color: rgba(255,167,38,0.50); }
+    .ma2.a6  { color: rgba(255,167,38,0.60); }
+    .ma2.a7  { color: rgba(255,167,38,0.70); }
+    .ma2.a8  { color: rgba(255,167,38,0.80); }
+    .ma2.a9  { color: rgba(255,167,38,0.90); }
+    .ma2.a10 { color: rgba(255,167,38,1.00); }
+
+    /* Crosshair (white) */
+    .xhair.a1  { color: rgba(255,255,255,0.10); }
+    .xhair.a2  { color: rgba(255,255,255,0.20); }
+    .xhair.a3  { color: rgba(255,255,255,0.30); }
+    .xhair.a4  { color: rgba(255,255,255,0.40); }
+    .xhair.a5  { color: rgba(255,255,255,0.50); }
+    .xhair.a6  { color: rgba(255,255,255,0.60); }
+    .xhair.a7  { color: rgba(255,255,255,0.70); }
+    .xhair.a8  { color: rgba(255,255,255,0.80); }
+    .xhair.a9  { color: rgba(255,255,255,0.90); }
+    .xhair.a10 { color: rgba(255,255,255,1.00); }
+
+    /* Axis labels */
+    .label { color: rgba(255,255,255,0.55); font-weight: 400; }
+
+    /* Stats overlay */
+    #stats {
+      position: fixed; bottom: 6px; left: 0; right: 0; text-align: center;
+      font: 400 10px/1 "Helvetica Neue", Arial, sans-serif;
+      color: rgba(255,255,255,0.10); pointer-events: none;
+    }
+
+    /* Controls bar */
+    #controls {
+      position: fixed; bottom: 24px; left: 0; right: 0; text-align: center;
+      font: 400 12px/1 "Helvetica Neue", Arial, sans-serif;
+      color: rgba(255,255,255,0.50); pointer-events: none;
+      display: none;
+    }
+    #controls select, #controls span {
+      pointer-events: auto;
+      background: rgba(255,255,255,0.05);
+      color: rgba(255,255,255,0.70);
+      border: 1px solid rgba(255,255,255,0.10);
+      padding: 2px 6px; margin: 0 4px;
+      font: inherit; border-radius: 3px;
+    }
+  </style>
+</head>
+<body>
+  <div id="art"></div>
+  <div id="stats"></div>
+  <div id="controls"></div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
