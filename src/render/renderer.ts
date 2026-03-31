@@ -1,51 +1,89 @@
-import type { CellInfo } from '../chart/compositor.ts'
+import { COLOR_CLASSES, type PixelGrid } from '../chart/canvas-chart.ts'
 import type { PaletteEntry } from './palette.ts'
 import { findBest, esc, wCls, spaceWidth } from './palette.ts'
 
-export function renderGrid(
-  grid: CellInfo[][],
-  rowEls: HTMLDivElement[],
+type LookupEntry = { html: string; width: number }
+
+// Pre-compute brightness→HTML lookup per color class index
+export function buildLookupTables(
   palette: PaletteEntry[],
   targetCellW: number,
   fontSize: number,
+): LookupEntry[][] {
+  const spaceW = spaceWidth(fontSize)
+  const tables: LookupEntry[][] = []
+
+  for (let ci = 0; ci < COLOR_CLASSES.length; ci++) {
+    const colorClass = COLOR_CLASSES[ci]!
+    const lookup: LookupEntry[] = []
+    for (let byte = 0; byte < 256; byte++) {
+      const brightness = byte / 255
+      if (byte < 15 || ci === 0) {
+        lookup.push({ html: ' ', width: spaceW })
+        continue
+      }
+      const m = findBest(palette, brightness, targetCellW)
+      const ai = Math.max(1, Math.min(10, Math.round(brightness * 10)))
+      lookup.push({
+        html: `<span class="${colorClass} ${wCls(m.weight, m.style)} a${ai}">${esc(m.char)}</span>`,
+        width: m.width,
+      })
+    }
+    tables.push(lookup)
+  }
+
+  return tables
+}
+
+export function renderPixelGrid(
+  grid: PixelGrid,
+  rowEls: HTMLDivElement[],
+  lookups: LookupEntry[][],
+  fontSize: number,
+  axisLabels: Map<string, string>,
 ): void {
   const spaceW = spaceWidth(fontSize)
+  const { cols, rows, brightness, colorIdx } = grid
   const rowWidths: number[] = []
 
-  for (let r = 0; r < grid.length; r++) {
-    const row = grid[r]!
+  for (let r = 0; r < rows && r < rowEls.length; r++) {
+    const rowOffset = r * cols
     let html = ''
     let tw = 0
     let spaceRun = 0
 
-    for (let c = 0; c < row.length; c++) {
-      const cell = row[c]!
+    for (let c = 0; c < cols; c++) {
+      const labelChar = axisLabels.get(`${r},${c}`)
 
-      if (cell.text) {
-        // Flush space run
+      if (labelChar) {
         if (spaceRun > 0) { html += ' '.repeat(spaceRun); tw += spaceW * spaceRun; spaceRun = 0 }
-        html += `<span class="label">${esc(cell.text)}</span>`
-        tw += targetCellW
-      } else if (cell.brightness > 0.025) {
-        if (spaceRun > 0) { html += ' '.repeat(spaceRun); tw += spaceW * spaceRun; spaceRun = 0 }
-        const m = findBest(palette, cell.brightness, targetCellW)
-        const ai = Math.max(1, Math.min(10, Math.round(cell.brightness * 10)))
-        html += `<span class="${cell.color} ${wCls(m.weight, m.style)} a${ai}">${esc(m.char)}</span>`
-        tw += m.width
-      } else {
+        html += `<span class="label">${labelChar}</span>`
+        tw += spaceW * 1.2
+        continue
+      }
+
+      const ci = colorIdx[rowOffset + c]!
+      const byte = Math.min(255, (brightness[rowOffset + c]! * 255) | 0)
+
+      if (byte < 15 || ci === 0) {
         spaceRun++
+      } else {
+        if (spaceRun > 0) { html += ' '.repeat(spaceRun); tw += spaceW * spaceRun; spaceRun = 0 }
+        const entry = lookups[ci]![byte]!
+        html += entry.html
+        tw += entry.width
       }
     }
     if (spaceRun > 0) { html += ' '.repeat(spaceRun); tw += spaceW * spaceRun }
 
-    if (rowEls[r]) rowEls[r]!.innerHTML = html
+    rowEls[r]!.innerHTML = html
     rowWidths.push(tw)
   }
 
   // Center rows
   const maxW = Math.max(...rowWidths)
   const blockOffset = Math.max(0, (window.innerWidth - maxW) / 2)
-  for (let r = 0; r < rowEls.length; r++) {
-    rowEls[r]!.style.paddingLeft = blockOffset + (maxW - (rowWidths[r] ?? 0)) / 2 + 'px'
+  for (let r = 0; r < rowEls.length && r < rowWidths.length; r++) {
+    rowEls[r]!.style.paddingLeft = blockOffset + (maxW - rowWidths[r]!) / 2 + 'px'
   }
 }
