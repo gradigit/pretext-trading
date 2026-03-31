@@ -2,29 +2,58 @@ import type { Candle } from '../data/types.ts'
 import type { Viewport } from './viewport.ts'
 import type { OrderBook } from '../data/orderbook.ts'
 
-// Color encoding: we use specific RGB values so the pixel reader
-// can determine which CSS color class to use.
-// Green channel dominant → bull, Red dominant → bear,
-// Blue dominant → ma1, Orange (R+G) → ma2, Gray → grid/xhair
-const BULL = '#00c853'
-const BULL_DIM = '#004d20'
-const BULL_VOL = '#00602a'
-const BEAR = '#e8143c'
-const BEAR_DIM = '#5c0818'
-const BEAR_VOL = '#6b1020'
-const MA1 = '#42a5f5'  // blue
-const MA2 = '#ff9800'  // orange
-const GRID = '#222238'
-const RSI_OB = '#5c0818'  // overbought line
-const RSI_OS = '#004d20'  // oversold line
-const RSI_MID = '#121225'
+// Bright, saturated colors for clear color classification
+const BULL = '#00e85c'
+const BULL_WICK = '#006628'
+const BULL_VOL = '#007830'
+const BEAR = '#ff2050'
+const BEAR_WICK = '#801028'
+const BEAR_VOL = '#901838'
+const MA1 = '#4db8ff'
+const MA2 = '#ffaa22'
+const GRID_LINE = '#1c1c35'
 const BG = '#000000'
-const BOOK_BID = '#003d15'
-const BOOK_ASK = '#4a0a18'
+const BOOK_BID_COLOR = '#00501c'
+const BOOK_ASK_COLOR = '#601020'
+const RSI_LINE_BULL = '#00cc50'
+const RSI_LINE_BEAR = '#ff3355'
+const RSI_LINE_NEUT = '#5599dd'
+const RSI_LEVEL = '#181830'
+const XHAIR = 'rgba(255,255,255,0.35)'
 
-export type PixelInfo = {
-  brightness: number
-  colorClass: string
+// Supersample factor: render at Nx resolution for smoother edges
+const SS = 2
+
+export type PixelGrid = {
+  brightness: Float32Array
+  colorIdx: Uint8Array
+  cols: number
+  rows: number
+}
+
+export const COLOR_CLASSES = ['', 'bull', 'bear', 'grid', 'ma1', 'ma2', 'xhair'] as const
+
+export function createPixelGrid(cols: number, rows: number): PixelGrid {
+  return {
+    brightness: new Float32Array(cols * rows),
+    colorIdx: new Uint8Array(cols * rows),
+    cols,
+    rows,
+  }
+}
+
+// Secondary canvas for blur pass
+let blurCanvas: HTMLCanvasElement | null = null
+let blurCtx: CanvasRenderingContext2D | null = null
+
+function getBlurCanvas(w: number, h: number): [HTMLCanvasElement, CanvasRenderingContext2D] {
+  if (!blurCanvas) {
+    blurCanvas = document.createElement('canvas')
+    blurCtx = blurCanvas.getContext('2d')!
+  }
+  if (blurCanvas.width !== w) blurCanvas.width = w
+  if (blurCanvas.height !== h) blurCanvas.height = h
+  return [blurCanvas, blurCtx!]
 }
 
 export function renderChartToCanvas(
@@ -39,12 +68,12 @@ export function renderChartToCanvas(
   mouseCol: number,
   mouseRow: number,
 ): void {
-  const w = vp.cols
-  const h = vp.rows
+  // Render at supersampled resolution
+  const w = vp.cols * SS
+  const h = vp.rows * SS
   if (canvas.width !== w) canvas.width = w
   if (canvas.height !== h) canvas.height = h
 
-  // Background
   ctx.fillStyle = BG
   ctx.fillRect(0, 0, w, h)
 
@@ -52,19 +81,28 @@ export function renderChartToCanvas(
   const chartRows = vp.chartRowEnd - vp.chartRowStart
   const priceRange = vp.priceMax - vp.priceMin
 
+  const S = SS // shorthand
   function priceToY(price: number): number {
-    return vp.chartRowStart + (vp.priceMax - price) / priceRange * chartRows
+    return (vp.chartRowStart + (vp.priceMax - price) / priceRange * chartRows) * S
   }
 
-  function candleX(vi: number): number {
-    return vp.chartColStart + vi * vp.colsPerCandle + Math.floor(vp.colsPerCandle / 2)
+  // --- Subtle background texture (very dim noise in chart area) ---
+  const bgImageData = ctx.createImageData(w, h)
+  const bgData = bgImageData.data
+  // Seed-based pseudo-random for consistency
+  for (let i = 0; i < bgData.length; i += 4) {
+    const noise = Math.random() < 0.03 ? 5 + Math.floor(Math.random() * 4) : 0
+    bgData[i] = noise
+    bgData[i + 1] = noise
+    bgData[i + 2] = Math.floor(noise * 1.3)
+    bgData[i + 3] = 255
   }
+  ctx.putImageData(bgImageData, 0, 0)
 
   // --- Grid lines ---
-  ctx.strokeStyle = GRID
-  ctx.lineWidth = 1
+  ctx.strokeStyle = GRID_LINE
+  ctx.lineWidth = S
 
-  // Horizontal grid lines at nice price levels
   const labelCount = Math.max(2, Math.min(8, Math.floor(chartRows / 10)))
   const priceStep = priceRange / labelCount
   const mag = Math.pow(10, Math.floor(Math.log10(priceStep)))
@@ -73,22 +111,21 @@ export function renderChartToCanvas(
 
   for (let price = firstPrice; price < vp.priceMax; price += niceStep) {
     const y = Math.round(priceToY(price))
-    if (y > vp.chartRowStart && y < vp.chartRowEnd - 1) {
+    if (y > vp.chartRowStart * S && y < vp.chartRowEnd * S) {
       ctx.beginPath()
-      ctx.moveTo(vp.chartColStart, y + 0.5)
-      ctx.lineTo(vp.chartColEnd, y + 0.5)
+      ctx.moveTo(vp.chartColStart * S, y)
+      ctx.lineTo(vp.chartColEnd * S, y)
       ctx.stroke()
     }
   }
 
-  // Vertical grid lines
   const timeLabelInterval = Math.max(1, Math.ceil(14 / vp.colsPerCandle))
   for (let i = vp.startIndex; i < end; i += timeLabelInterval) {
     const vi = i - vp.startIndex
-    const x = candleX(vi)
+    const x = (vp.chartColStart + vi * vp.colsPerCandle + Math.floor(vp.colsPerCandle / 2)) * S
     ctx.beginPath()
-    ctx.moveTo(x + 0.5, vp.chartRowStart)
-    ctx.lineTo(x + 0.5, vp.chartRowEnd)
+    ctx.moveTo(x, vp.chartRowStart * S)
+    ctx.lineTo(x, vp.chartRowEnd * S)
     ctx.stroke()
   }
 
@@ -103,12 +140,12 @@ export function renderChartToCanvas(
     for (let i = vp.startIndex; i < end; i++) {
       const c = candles[i]!
       const vi = i - vp.startIndex
-      const x = vp.chartColStart + vi * vp.colsPerCandle
-      const barH = Math.max(1, Math.round((c.volume / maxVol) * volumeRows))
-      const bodyW = Math.max(1, vp.colsPerCandle - 1)
+      const x = (vp.chartColStart + vi * vp.colsPerCandle) * S
+      const barH = Math.max(S, Math.round((c.volume / maxVol) * volumeRows * S))
+      const bodyW = Math.max(S, (vp.colsPerCandle - 1) * S)
 
       ctx.fillStyle = c.close >= c.open ? BULL_VOL : BEAR_VOL
-      ctx.fillRect(x, vp.volumeRowEnd - barH, bodyW, barH)
+      ctx.fillRect(x, vp.volumeRowEnd * S - barH, bodyW, barH)
     }
   }
 
@@ -116,10 +153,10 @@ export function renderChartToCanvas(
   for (let i = vp.startIndex; i < end; i++) {
     const c = candles[i]!
     const vi = i - vp.startIndex
-    const centerX = candleX(vi)
+    const centerX = (vp.chartColStart + vi * vp.colsPerCandle + Math.floor(vp.colsPerCandle / 2)) * S
     const isBull = c.close >= c.open
-    const bodyW = Math.max(1, vp.colsPerCandle - 1)
-    const bodyX = vp.chartColStart + vi * vp.colsPerCandle
+    const bodyW = Math.max(S, (vp.colsPerCandle - 1) * S)
+    const bodyX = (vp.chartColStart + vi * vp.colsPerCandle) * S
 
     const yHigh = priceToY(c.high)
     const yLow = priceToY(c.low)
@@ -129,22 +166,22 @@ export function renderChartToCanvas(
     const bodyBot = Math.max(yOpen, yClose)
 
     // Wick
-    ctx.strokeStyle = isBull ? BULL_DIM : BEAR_DIM
-    ctx.lineWidth = 1
+    ctx.strokeStyle = isBull ? BULL_WICK : BEAR_WICK
+    ctx.lineWidth = S
     ctx.beginPath()
-    ctx.moveTo(centerX + 0.5, yHigh)
-    ctx.lineTo(centerX + 0.5, yLow)
+    ctx.moveTo(centerX, yHigh)
+    ctx.lineTo(centerX, yLow)
     ctx.stroke()
 
-    // Body (filled rectangle)
+    // Body
     ctx.fillStyle = isBull ? BULL : BEAR
-    const bodyH = Math.max(1, bodyBot - bodyTop)
+    const bodyH = Math.max(S, bodyBot - bodyTop)
     ctx.fillRect(bodyX, bodyTop, bodyW, bodyH)
   }
 
   // --- MA lines ---
-  drawMALine(ctx, sma20, vp, MA1, 1.5)
-  drawMALine(ctx, sma50, vp, MA2, 1.5)
+  drawMALine(ctx, sma20, vp, MA1, S * 1.2)
+  drawMALine(ctx, sma50, vp, MA2, S * 1.2)
 
   // --- RSI panel ---
   if (vp.showRsi) {
@@ -156,21 +193,34 @@ export function renderChartToCanvas(
     renderOrderBookToCanvas(ctx, orderBook, vp)
   }
 
-  // --- Crosshair ---
+  // --- Glow pass: blur the entire canvas for soft edges ---
+  const [bCanvas, bCtx] = getBlurCanvas(w, h)
+  bCtx.filter = `blur(${S}px)`
+  bCtx.drawImage(canvas, 0, 0)
+  bCtx.filter = 'none'
+
+  // Composite: additive blend of blurred version (glow) onto sharp original
+  ctx.globalCompositeOperation = 'lighter'
+  ctx.globalAlpha = 0.25
+  ctx.drawImage(bCanvas, 0, 0)
+  ctx.globalAlpha = 1.0
+  ctx.globalCompositeOperation = 'source-over'
+
+  // --- Crosshair (drawn AFTER glow so it stays sharp) ---
   if (mouseCol >= vp.chartColStart && mouseCol < vp.chartColEnd &&
       mouseRow >= 0 && mouseRow < vp.rsiRowEnd) {
-    ctx.strokeStyle = 'rgba(255,255,255,0.25)'
-    ctx.lineWidth = 1
-    // Horizontal line
+    ctx.strokeStyle = XHAIR
+    ctx.lineWidth = S
+    ctx.setLineDash([S * 2, S * 2])
     ctx.beginPath()
-    ctx.moveTo(vp.chartColStart, mouseRow + 0.5)
-    ctx.lineTo(vp.chartColEnd, mouseRow + 0.5)
+    ctx.moveTo(vp.chartColStart * S, mouseRow * S + S / 2)
+    ctx.lineTo(vp.chartColEnd * S, mouseRow * S + S / 2)
     ctx.stroke()
-    // Vertical line
     ctx.beginPath()
-    ctx.moveTo(mouseCol + 0.5, 0)
-    ctx.lineTo(mouseCol + 0.5, vp.rsiRowEnd)
+    ctx.moveTo(mouseCol * S + S / 2, 0)
+    ctx.lineTo(mouseCol * S + S / 2, vp.rsiRowEnd * S)
     ctx.stroke()
+    ctx.setLineDash([])
   }
 }
 
@@ -187,65 +237,68 @@ function drawMALine(
 
   ctx.strokeStyle = color
   ctx.lineWidth = width
+  ctx.lineJoin = 'round'
+  ctx.lineCap = 'round'
   ctx.beginPath()
   let started = false
 
   for (let i = vp.startIndex; i < end; i++) {
     const val = values[i]
     if (val === null) { started = false; continue }
-
     const vi = i - vp.startIndex
-    const x = vp.chartColStart + vi * vp.colsPerCandle + Math.floor(vp.colsPerCandle / 2)
-    const y = vp.chartRowStart + (vp.priceMax - val) / priceRange * chartRows
+    const x = (vp.chartColStart + vi * vp.colsPerCandle + Math.floor(vp.colsPerCandle / 2)) * SS
+    const y = (vp.chartRowStart + (vp.priceMax - val) / priceRange * chartRows) * SS
 
-    if (!started) {
-      ctx.moveTo(x, y)
-      started = true
-    } else {
-      ctx.lineTo(x, y)
-    }
+    if (!started) { ctx.moveTo(x, y); started = true }
+    else { ctx.lineTo(x, y) }
   }
   ctx.stroke()
 }
 
-function renderRSIToCanvas(
-  ctx: CanvasRenderingContext2D,
-  rsi14: (number | null)[],
-  vp: Viewport,
-): void {
-  const panelH = vp.rsiRowEnd - vp.rsiRowStart
-  const row70 = vp.rsiRowStart + Math.floor((1 - 70 / 100) * panelH)
-  const row30 = vp.rsiRowStart + Math.floor((1 - 30 / 100) * panelH)
-  const row50 = vp.rsiRowStart + Math.floor((1 - 50 / 100) * panelH)
+function renderRSIToCanvas(ctx: CanvasRenderingContext2D, rsi14: (number | null)[], vp: Viewport): void {
+  const S = SS
+  const panelH = (vp.rsiRowEnd - vp.rsiRowStart) * S
+  const panelTop = vp.rsiRowStart * S
+  const row70 = panelTop + Math.floor((1 - 70 / 100) * panelH)
+  const row30 = panelTop + Math.floor((1 - 30 / 100) * panelH)
+  const row50 = panelTop + Math.floor(panelH / 2)
 
-  // OB/OS lines
-  ctx.strokeStyle = RSI_OB
-  ctx.lineWidth = 1
-  ctx.beginPath(); ctx.moveTo(vp.chartColStart, row70 + 0.5); ctx.lineTo(vp.chartColEnd, row70 + 0.5); ctx.stroke()
-  ctx.strokeStyle = RSI_OS
-  ctx.beginPath(); ctx.moveTo(vp.chartColStart, row30 + 0.5); ctx.lineTo(vp.chartColEnd, row30 + 0.5); ctx.stroke()
-  ctx.strokeStyle = RSI_MID
-  ctx.beginPath(); ctx.moveTo(vp.chartColStart, row50 + 0.5); ctx.lineTo(vp.chartColEnd, row50 + 0.5); ctx.stroke()
+  ctx.strokeStyle = RSI_LEVEL
+  ctx.lineWidth = S
+  for (const y of [row70, row30, row50]) {
+    ctx.beginPath()
+    ctx.moveTo(vp.chartColStart * S, y)
+    ctx.lineTo(vp.chartColEnd * S, y)
+    ctx.stroke()
+  }
 
   // RSI line
   const end = Math.min(vp.startIndex + vp.visibleCount, rsi14.length)
-  ctx.lineWidth = 1.5
+  ctx.lineWidth = S * 1.5
+  ctx.lineJoin = 'round'
   ctx.beginPath()
   let started = false
+  let lastColor = RSI_LINE_NEUT
 
   for (let i = vp.startIndex; i < end; i++) {
     const val = rsi14[i]
     if (val === null) { started = false; continue }
-
     const vi = i - vp.startIndex
-    const x = vp.chartColStart + vi * vp.colsPerCandle + Math.floor(vp.colsPerCandle / 2)
-    const y = vp.rsiRowStart + (1 - val / 100) * panelH
+    const x = (vp.chartColStart + vi * vp.colsPerCandle + Math.floor(vp.colsPerCandle / 2)) * S
+    const y = panelTop + (1 - val / 100) * panelH
 
-    // Color based on level
-    if (!started) {
-      ctx.strokeStyle = val >= 70 ? BEAR : val <= 30 ? BULL : MA1
+    const newColor = val >= 70 ? RSI_LINE_BEAR : val <= 30 ? RSI_LINE_BULL : RSI_LINE_NEUT
+    if (newColor !== lastColor && started) {
+      ctx.stroke()
+      ctx.beginPath()
+      ctx.strokeStyle = newColor
+      ctx.moveTo(x, y)
+      lastColor = newColor
+    } else if (!started) {
+      ctx.strokeStyle = newColor
       ctx.moveTo(x, y)
       started = true
+      lastColor = newColor
     } else {
       ctx.lineTo(x, y)
     }
@@ -253,94 +306,84 @@ function renderRSIToCanvas(
   ctx.stroke()
 }
 
-function renderOrderBookToCanvas(
-  ctx: CanvasRenderingContext2D,
-  book: OrderBook,
-  vp: Viewport,
-): void {
+function renderOrderBookToCanvas(ctx: CanvasRenderingContext2D, book: OrderBook, vp: Viewport): void {
   if (book.bids.length === 0) return
+  const S = SS
+  const midRow = (vp.chartRowStart + Math.floor((vp.chartRowEnd - vp.chartRowStart) / 2)) * S
+  const bookW = (vp.bookColEnd - vp.bookColStart) * S
+  const halfRows = (midRow - vp.chartRowStart * S)
 
-  const midRow = vp.chartRowStart + Math.floor((vp.chartRowEnd - vp.chartRowStart) / 2)
-  const bookW = vp.bookColEnd - vp.bookColStart
-  const halfRows = midRow - vp.chartRowStart
-
-  let maxCum = 0
-  let cum = 0
+  let maxCum = 0, cum = 0
   for (const b of book.bids) { cum += b.quantity; if (cum > maxCum) maxCum = cum }
   cum = 0
   for (const a of book.asks) { cum += a.quantity; if (cum > maxCum) maxCum = cum }
   if (maxCum === 0) return
 
-  // Bids (green, below mid)
   cum = 0
-  for (let i = 0; i < Math.min(book.bids.length, halfRows); i++) {
+  for (let i = 0; i < Math.min(book.bids.length, halfRows / S); i++) {
     cum += book.bids[i]!.quantity
-    const barW = Math.max(1, Math.round((cum / maxCum) * bookW))
-    const row = midRow + i + 1
-    if (row >= vp.chartRowEnd) break
-    ctx.fillStyle = BOOK_BID
-    ctx.fillRect(vp.bookColEnd - barW, row, barW, 1)
+    const barW = Math.max(S, Math.round((cum / maxCum) * bookW))
+    const row = midRow + (i + 1) * S
+    if (row >= vp.chartRowEnd * S) break
+    ctx.fillStyle = BOOK_BID_COLOR
+    ctx.fillRect(vp.bookColEnd * S - barW, row, barW, S)
   }
 
-  // Asks (red, above mid)
   cum = 0
-  for (let i = 0; i < Math.min(book.asks.length, halfRows); i++) {
+  for (let i = 0; i < Math.min(book.asks.length, halfRows / S); i++) {
     cum += book.asks[i]!.quantity
-    const barW = Math.max(1, Math.round((cum / maxCum) * bookW))
-    const row = midRow - i - 1
-    if (row < vp.chartRowStart) break
-    ctx.fillStyle = BOOK_ASK
-    ctx.fillRect(vp.bookColEnd - barW, row, barW, 1)
+    const barW = Math.max(S, Math.round((cum / maxCum) * bookW))
+    const row = midRow - (i + 1) * S
+    if (row < vp.chartRowStart * S) break
+    ctx.fillStyle = BOOK_ASK_COLOR
+    ctx.fillRect(vp.bookColEnd * S - barW, row, barW, S)
   }
 }
 
-// --- Read canvas pixels into flat typed arrays (zero allocation per frame) ---
-export type PixelGrid = {
-  brightness: Float32Array  // row-major, cols * rows
-  colorIdx: Uint8Array      // 0=space, 1=bull, 2=bear, 3=grid, 4=ma1, 5=ma2, 6=xhair
-  cols: number
-  rows: number
-}
-
-export const COLOR_CLASSES = ['', 'bull', 'bear', 'grid', 'ma1', 'ma2', 'xhair'] as const
-
-export function createPixelGrid(cols: number, rows: number): PixelGrid {
-  return {
-    brightness: new Float32Array(cols * rows),
-    colorIdx: new Uint8Array(cols * rows),
-    cols,
-    rows,
-  }
-}
-
+// --- Read supersampled canvas → downsample to grid ---
 export function readCanvasToGrid(
   ctx: CanvasRenderingContext2D,
   grid: PixelGrid,
 ): void {
   const { cols, rows } = grid
-  const imgData = ctx.getImageData(0, 0, cols, rows).data
+  const sw = cols * SS
+  const sh = rows * SS
+  const imgData = ctx.getImageData(0, 0, sw, sh).data
 
-  for (let i = 0, len = cols * rows; i < len; i++) {
-    const idx = i * 4
-    const r = imgData[idx]!
-    const g = imgData[idx + 1]!
-    const b = imgData[idx + 2]!
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      // Average SS×SS pixel block
+      let rr = 0, gg = 0, bb = 0
+      for (let dy = 0; dy < SS; dy++) {
+        for (let dx = 0; dx < SS; dx++) {
+          const idx = ((r * SS + dy) * sw + (c * SS + dx)) * 4
+          rr += imgData[idx]!
+          gg += imgData[idx + 1]!
+          bb += imgData[idx + 2]!
+        }
+      }
+      const n = SS * SS
+      rr = rr / n; gg = gg / n; bb = bb / n
 
-    const mx = r > g ? (r > b ? r : b) : (g > b ? g : b)
-    grid.brightness[i] = mx / 255
+      const i = r * cols + c
+      const mx = rr > gg ? (rr > bb ? rr : bb) : (gg > bb ? gg : bb)
+      grid.brightness[i] = mx / 255
 
-    if (mx < 5) {
-      grid.colorIdx[i] = 0 // space
-    } else if (g > r * 1.3 && g > b * 1.3) {
-      grid.colorIdx[i] = 1 // bull
-    } else if (r > g * 1.3 && r > b * 1.3) {
-      grid.colorIdx[i] = 2 // bear
-    } else if (b > r * 1.2 && b > g * 1.2) {
-      grid.colorIdx[i] = 4 // ma1
-    } else if (r > b * 1.3 && g > b * 1.2 && r > 40) {
-      grid.colorIdx[i] = 5 // ma2
-    } else {
-      grid.colorIdx[i] = 6 // xhair
+      if (mx < 4) {
+        grid.colorIdx[i] = 0
+      } else if (gg > rr * 1.3 && gg > bb * 1.3) {
+        grid.colorIdx[i] = 1 // bull
+      } else if (rr > gg * 1.3 && rr > bb * 1.3) {
+        grid.colorIdx[i] = 2 // bear
+      } else if (bb > rr * 1.2 && bb > gg * 1.2) {
+        grid.colorIdx[i] = 4 // ma1
+      } else if (rr > bb * 1.3 && gg > bb * 1.2 && rr > 30) {
+        grid.colorIdx[i] = 5 // ma2
+      } else if (mx > 10) {
+        grid.colorIdx[i] = 3 // grid (dim gray)
+      } else {
+        grid.colorIdx[i] = 0
+      }
     }
   }
 }

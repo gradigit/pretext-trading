@@ -2,7 +2,8 @@ import { prepareWithSegments } from '@chenglou/pretext'
 
 // --- Configuration ---
 export const PROP_FAMILY = 'Georgia, Palatino, "Times New Roman", serif'
-const CHARSET = ' .,:;!+-=*#@%&abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+// Dense charset: alphanumeric + symbols + Unicode dots/blocks/shading for dithered look
+const CHARSET = ' .,:;·•°¹²³⁴⁺⁻`\'-_~!|/\\()[]{}?<>^=+*#@%&$£€¥©®™§¶†‡abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789░▒▓█▀▄▌▐─│┌┐└┘├┤┬┴┼━┃╋○●◦◘◙■□▪▫▬▮▯◆◇◈★☆♦♣♠♥∙∘∞≡≈≠±÷×∑∏∫√∂∆∇πΩαβγδεθλμσφψω'
 const WEIGHTS = [300, 500, 800] as const
 const FONT_STYLES = ['normal', 'italic'] as const
 

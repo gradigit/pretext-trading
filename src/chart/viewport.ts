@@ -39,7 +39,8 @@ export function createViewport(cols: number, rows: number, candles: Candle[], st
   const chartColEnd = cols - bookCols
 
   const chartCols = chartColEnd - chartColStart
-  const colsPerCandle = Math.max(2, Math.min(7, Math.floor(chartCols / (isNarrow ? 30 : 60))))
+  // Target ~80-100 candles visible on desktop, ~40 on mobile
+  const colsPerCandle = Math.max(2, Math.min(5, Math.floor(chartCols / (isNarrow ? 40 : 90))))
   const visibleCount = Math.floor(chartCols / colsPerCandle)
   const si = startIndex ?? Math.max(0, candles.length - visibleCount)
 
