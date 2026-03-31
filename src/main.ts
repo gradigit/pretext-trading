@@ -274,11 +274,13 @@ function render(now: number): void {
 
   const targetCellW = window.innerWidth / COLS
 
-  // 1. Render chart to hidden canvas
-  renderChartToCanvas(chartCanvas, chartCtx, candles, vp, sma20, sma50, rsi14, orderBook, mouseCol, mouseRow)
+  // 1. Render chart to hidden canvas at full screen resolution
+  const screenW = window.innerWidth
+  const screenH = window.innerHeight
+  renderChartToCanvas(chartCanvas, chartCtx, candles, vp, sma20, sma50, rsi14, orderBook, mouseCol, mouseRow, screenW, screenH)
 
-  // 2. Read canvas pixels into pre-allocated grid (zero alloc)
-  readCanvasToGrid(chartCtx, pixelGrid)
+  // 2. Downsample screen-res canvas to character grid
+  readCanvasToGrid(chartCtx, pixelGrid, screenW, screenH)
 
   // 3. Build axis labels
   const axisLabels = buildAxisLabels()

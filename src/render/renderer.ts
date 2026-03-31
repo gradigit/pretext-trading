@@ -18,7 +18,7 @@ export function buildLookupTables(
     const lookup: LookupEntry[] = []
     for (let byte = 0; byte < 256; byte++) {
       const brightness = byte / 255
-      if (byte < 8 || ci === 0) {
+      if (byte < 5 || ci === 0) {
         lookup.push({ html: ' ', width: spaceW })
         continue
       }
@@ -65,7 +65,7 @@ export function renderPixelGrid(
       const ci = colorIdx[rowOffset + c]!
       const byte = Math.min(255, (brightness[rowOffset + c]! * 255) | 0)
 
-      if (byte < 8 || ci === 0) {
+      if (byte < 5 || ci === 0) {
         spaceRun++
       } else {
         if (spaceRun > 0) { html += ' '.repeat(spaceRun); tw += spaceW * spaceRun; spaceRun = 0 }
