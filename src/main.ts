@@ -1,7 +1,8 @@
 import { buildPalette, getResponsiveFontSize, getLineHeight } from './render/palette.ts'
-import { renderPixelGrid, buildAnimLookupTables, createRainState, advanceRain, type RainState } from './render/renderer.ts'
+import { renderPixelGrid, buildAnimLookupTables } from './render/renderer.ts'
 import { createViewport, pan, zoom, updatePriceRange } from './chart/viewport.ts'
 import { renderChartToCanvas, readCanvasToGrid, createPixelGrid, type PixelGrid } from './chart/canvas-chart.ts'
+import { createFlowField, updateFlowField, type FlowField } from './render/bg-flow.ts'
 import { fetchCandles, subscribeKlines } from './data/feed.ts'
 import { fetchOrderBook, subscribeOrderBook, type OrderBook } from './data/orderbook.ts'
 import { generateSampleData } from './data/sample.ts'
@@ -26,12 +27,10 @@ const INTERVALS: { interval: '1m'|'5m'|'15m'|'1h'|'4h'|'1d'; label: string }[] =
 let currentPair = PAIRS[0]!
 let currentInterval = INTERVALS[3]!
 
-// --- DOM ---
 const artEl = document.getElementById('art')!
 const statsEl = document.getElementById('stats')!
 const controlsEl = document.getElementById('controls')!
 
-// --- Hidden canvas ---
 const chartCanvas = document.createElement('canvas')
 const chartCtx = chartCanvas.getContext('2d', { willReadFrequently: true })!
 
@@ -57,18 +56,17 @@ function recomputeIndicators() {
   rsi14 = rsi(candles, 14)
 }
 
-// --- Animated lookup tables + pixel grid ---
+// --- Rendering state ---
 let lookups = buildAnimLookupTables(palette, 8, currentFontSize)
 let lastTargetCellW = 0
 let pixelGrid: PixelGrid = createPixelGrid(1, 1)
-let rain: RainState = createRainState(1)
+let flow: FlowField = createFlowField(1, 1, 0.6)
 
-// --- Grid ---
 let avgCharW = palette.reduce((s, p) => s + p.width, 0) / palette.length
 let COLS = 0, ROWS = 0
 let rowEls: HTMLDivElement[] = []
 let vp = createViewport(0, 0, candles)
-let chartDirty = true  // chart data changed — re-render canvas
+let chartDirty = true
 let animFrame = 0
 
 function initGrid() {
@@ -90,7 +88,8 @@ function initGrid() {
   }
 
   pixelGrid = createPixelGrid(COLS, ROWS)
-  rain = createRainState(COLS)
+  const aspect = avgCharW / lineHeight
+  flow = createFlowField(COLS, ROWS, aspect)
   vp = createViewport(COLS, ROWS, candles)
 
   artEl.innerHTML = ''
@@ -183,11 +182,8 @@ async function loadData() {
     unsubKline = subscribeKlines(currentPair.symbol, currentInterval.interval, (candle, isClosed) => {
       if (candles.length === 0) return
       const last = candles[candles.length - 1]!
-      if (candle.time === last.time) {
-        candles[candles.length - 1] = candle
-      } else if (isClosed || candle.time > last.time) {
-        candles.push(candle)
-      }
+      if (candle.time === last.time) candles[candles.length - 1] = candle
+      else if (isClosed || candle.time > last.time) candles.push(candle)
       recomputeIndicators()
       updatePriceRange(vp, candles)
       chartDirty = true
@@ -231,49 +227,37 @@ function buildControls() {
   controlsEl.style.display = 'block'
 }
 
-// --- Resize ---
+// --- Events ---
 let resizeTimer = 0
-window.addEventListener('resize', () => {
-  clearTimeout(resizeTimer)
-  resizeTimer = window.setTimeout(initGrid, 150)
-})
+window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = window.setTimeout(initGrid, 150) })
 
-// --- Scroll/zoom ---
 window.addEventListener('wheel', (e) => {
   e.preventDefault()
-  if (e.ctrlKey || e.metaKey) {
-    zoom(vp, e.deltaY > 0 ? 1.2 : 0.8, candles)
-  } else {
-    pan(vp, e.deltaY > 0 ? 3 : -3, candles)
-  }
+  if (e.ctrlKey || e.metaKey) zoom(vp, e.deltaY > 0 ? 1.2 : 0.8, candles)
+  else pan(vp, e.deltaY > 0 ? 3 : -3, candles)
   chartDirty = true
 }, { passive: false })
 
-// --- Crosshair ---
 let mouseCol = -1, mouseRow = -1
-
 artEl.addEventListener('mousemove', (e: MouseEvent) => {
   const newCol = Math.floor(e.clientX / (window.innerWidth / COLS))
   const newRow = Math.floor(e.clientY / lineHeight)
-  if (newCol !== mouseCol || newRow !== mouseRow) {
-    mouseCol = newCol; mouseRow = newRow; chartDirty = true
-  }
+  if (newCol !== mouseCol || newRow !== mouseRow) { mouseCol = newCol; mouseRow = newRow; chartDirty = true }
 })
 artEl.addEventListener('mouseleave', () => { mouseCol = -1; mouseRow = -1; chartDirty = true })
 
-// Periodic chart refresh for live data
 setInterval(() => { chartDirty = true }, 2000)
 
-// --- Render loop (always runs for animation) ---
+// --- Render loop ---
 let fc = 0, lastFps = 0, dispFps = 0
 let lastAnimTime = 0
-const ANIM_INTERVAL = 150 // ms between character cycles
+const ANIM_INTERVAL = 120 // ms between animation ticks
 
 function render(now: number): void {
   requestAnimationFrame(render)
   if (COLS === 0 || candles.length === 0) return
 
-  // Only re-render chart canvas when data changes
+  // Re-render chart canvas only when data changes
   if (chartDirty) {
     chartDirty = false
     renderChartToCanvas(chartCanvas, chartCtx, candles, vp, sma20, sma50, rsi14, orderBook, mouseCol, mouseRow, 0, 0)
@@ -281,17 +265,17 @@ function render(now: number): void {
     cachedAxisLabels = buildAxisLabels()
   }
 
-  // Animation tick — advance rain and cycle characters
-  const shouldAnimate = now - lastAnimTime > ANIM_INTERVAL
-  if (!shouldAnimate) return
+  // Animation tick
+  if (now - lastAnimTime < ANIM_INTERVAL) return
   lastAnimTime = now
   animFrame++
 
-  // Advance matrix rain
-  advanceRain(rain, ROWS)
+  // Advance background flow field
+  const t = now / 1000
+  updateFlowField(flow, t)
 
-  // Render text with animated characters + rain
-  renderPixelGrid(pixelGrid, rowEls, lookups, currentFontSize, cachedAxisLabels, animFrame, rain)
+  // Render with animated characters + flow background
+  renderPixelGrid(pixelGrid, rowEls, lookups, currentFontSize, cachedAxisLabels, animFrame, flow)
 
   // Stats
   fc++
@@ -306,6 +290,5 @@ function render(now: number): void {
   }
 }
 
-// --- Start ---
 buildControls()
 loadData().then(() => requestAnimationFrame(render))
