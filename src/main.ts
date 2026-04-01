@@ -1,5 +1,5 @@
 import { buildPalette, getResponsiveFontSize, getLineHeight } from './render/palette.ts'
-import { renderPixelGrid, buildAnimLookupTables } from './render/renderer.ts'
+import { buildCharLookup, renderToCanvas, type CharLookup } from './render/canvas-text-renderer.ts'
 import { createViewport, pan, zoom, updatePriceRange } from './chart/viewport.ts'
 import { renderChartToCanvas, readCanvasToGrid, createPixelGrid, type PixelGrid } from './chart/canvas-chart.ts'
 import { createFlowField, updateFlowField, type FlowField } from './render/bg-flow.ts'
@@ -9,19 +9,15 @@ import { generateSampleData } from './data/sample.ts'
 import { sma, rsi } from './data/indicators.ts'
 import type { Candle } from './data/types.ts'
 
-// --- Config ---
 const PAIRS = [
   { symbol: 'BTCUSDT', label: 'BTC/USDT' },
   { symbol: 'ETHUSDT', label: 'ETH/USDT' },
   { symbol: 'SOLUSDT', label: 'SOL/USDT' },
 ]
 const INTERVALS: { interval: '1m'|'5m'|'15m'|'1h'|'4h'|'1d'; label: string }[] = [
-  { interval: '1m', label: '1m' },
-  { interval: '5m', label: '5m' },
-  { interval: '15m', label: '15m' },
-  { interval: '1h', label: '1h' },
-  { interval: '4h', label: '4h' },
-  { interval: '1d', label: '1D' },
+  { interval: '1m', label: '1m' }, { interval: '5m', label: '5m' },
+  { interval: '15m', label: '15m' }, { interval: '1h', label: '1h' },
+  { interval: '4h', label: '4h' }, { interval: '1d', label: '1D' },
 ]
 
 let currentPair = PAIRS[0]!
@@ -31,15 +27,22 @@ const artEl = document.getElementById('art')!
 const statsEl = document.getElementById('stats')!
 const controlsEl = document.getElementById('controls')!
 
+// --- Display canvas (visible — replaces innerHTML divs) ---
+const displayCanvas = document.createElement('canvas')
+displayCanvas.style.width = '100%'
+displayCanvas.style.height = '100%'
+displayCanvas.style.display = 'block'
+artEl.appendChild(displayCanvas)
+const displayCtx = displayCanvas.getContext('2d')!
+
+// --- Hidden chart canvas ---
 const chartCanvas = document.createElement('canvas')
 const chartCtx = chartCanvas.getContext('2d', { willReadFrequently: true })!
 
 // --- Palette ---
 let currentFontSize = getResponsiveFontSize()
 let lineHeight = getLineHeight(currentFontSize)
-const t0 = performance.now()
 let palette = buildPalette(currentFontSize)
-const paletteMs = (performance.now() - t0).toFixed(0)
 
 // --- Data ---
 let candles: Candle[] = []
@@ -57,17 +60,16 @@ function recomputeIndicators() {
 }
 
 // --- Rendering state ---
-let lookups = buildAnimLookupTables(palette, 8, currentFontSize)
-let lastTargetCellW = 0
+let avgCharW = palette.reduce((s, p) => s + p.width, 0) / palette.length
+let charLookup: CharLookup = buildCharLookup(palette, 8)
 let pixelGrid: PixelGrid = createPixelGrid(1, 1)
 let flow: FlowField = createFlowField(1, 1, 0.6)
-
-let avgCharW = palette.reduce((s, p) => s + p.width, 0) / palette.length
 let COLS = 0, ROWS = 0
-let rowEls: HTMLDivElement[] = []
 let vp = createViewport(0, 0, candles)
 let chartDirty = true
 let animFrame = 0
+let lastInteraction = 0
+let glowPending = false
 
 function initGrid() {
   const newFontSize = getResponsiveFontSize()
@@ -81,26 +83,12 @@ function initGrid() {
   COLS = Math.min(380, Math.floor(window.innerWidth / avgCharW))
   ROWS = Math.min(160, Math.floor(window.innerHeight / lineHeight))
 
-  const newTargetCellW = window.innerWidth / COLS
-  if (Math.abs(newTargetCellW - lastTargetCellW) > 0.5) {
-    lookups = buildAnimLookupTables(palette, newTargetCellW, currentFontSize)
-    lastTargetCellW = newTargetCellW
-  }
-
+  const targetCellW = window.innerWidth / COLS
+  charLookup = buildCharLookup(palette, targetCellW)
   pixelGrid = createPixelGrid(COLS, ROWS)
   const aspect = avgCharW / lineHeight
   flow = createFlowField(COLS, ROWS, aspect)
   vp = createViewport(COLS, ROWS, candles)
-
-  artEl.innerHTML = ''
-  rowEls = []
-  for (let r = 0; r < ROWS; r++) {
-    const div = document.createElement('div')
-    div.className = 'r'
-    div.style.height = div.style.lineHeight = lineHeight + 'px'
-    artEl.appendChild(div)
-    rowEls.push(div)
-  }
   chartDirty = true
 }
 
@@ -134,7 +122,6 @@ function buildAxisLabels(): Map<string, string> {
   const timeLabelInterval = Math.max(1, Math.ceil(14 / vp.colsPerCandle))
   const timeRow = Math.min(vp.volumeRowEnd + 1, ROWS - 2)
   let lastEnd = -1
-
   for (let i = vp.startIndex; i < end; i += timeLabelInterval) {
     const vi = i - vp.startIndex
     const col = vp.chartColStart + vi * vp.colsPerCandle + Math.floor(vp.colsPerCandle / 2)
@@ -169,27 +156,20 @@ function buildAxisLabels(): Map<string, string> {
 async function loadData() {
   if (unsubKline) { unsubKline(); unsubKline = null }
   if (unsubBook) { unsubBook(); unsubBook = null }
-
   try {
     candles = await fetchCandles(currentPair.symbol, currentInterval.interval, 500)
-  } catch {
-    candles = generateSampleData(500)
-  }
+  } catch { candles = generateSampleData(500) }
   recomputeIndicators()
   initGrid()
-
   try {
     unsubKline = subscribeKlines(currentPair.symbol, currentInterval.interval, (candle, isClosed) => {
       if (candles.length === 0) return
       const last = candles[candles.length - 1]!
       if (candle.time === last.time) candles[candles.length - 1] = candle
       else if (isClosed || candle.time > last.time) candles.push(candle)
-      recomputeIndicators()
-      updatePriceRange(vp, candles)
-      chartDirty = true
+      recomputeIndicators(); updatePriceRange(vp, candles); chartDirty = true
     })
-  } catch { /* offline */ }
-
+  } catch {}
   try {
     orderBook = await fetchOrderBook(currentPair.symbol, 20)
     unsubBook = subscribeOrderBook(currentPair.symbol, (book) => { orderBook = book; chartDirty = true })
@@ -205,10 +185,7 @@ function buildControls() {
     if (p.symbol === currentPair.symbol) opt.selected = true
     pairSelect.appendChild(opt)
   }
-  pairSelect.addEventListener('change', () => {
-    currentPair = PAIRS.find(p => p.symbol === pairSelect.value) ?? PAIRS[0]!
-    loadData()
-  })
+  pairSelect.addEventListener('change', () => { currentPair = PAIRS.find(p => p.symbol === pairSelect.value) ?? PAIRS[0]!; loadData() })
 
   const intSelect = document.createElement('select')
   for (const iv of INTERVALS) {
@@ -217,10 +194,7 @@ function buildControls() {
     if (iv.interval === currentInterval.interval) opt.selected = true
     intSelect.appendChild(opt)
   }
-  intSelect.addEventListener('change', () => {
-    currentInterval = INTERVALS.find(i => i.interval === intSelect.value) ?? INTERVALS[3]!
-    loadData()
-  })
+  intSelect.addEventListener('change', () => { currentInterval = INTERVALS.find(i => i.interval === intSelect.value) ?? INTERVALS[3]!; loadData() })
 
   controlsEl.appendChild(pairSelect)
   controlsEl.appendChild(intSelect)
@@ -231,51 +205,59 @@ function buildControls() {
 let resizeTimer = 0
 window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = window.setTimeout(initGrid, 150) })
 
+let pendingScroll = 0, scrollTimer = 0
 window.addEventListener('wheel', (e) => {
   e.preventDefault()
-  if (e.ctrlKey || e.metaKey) zoom(vp, e.deltaY > 0 ? 1.2 : 0.8, candles)
-  else pan(vp, e.deltaY > 0 ? 3 : -3, candles)
-  chartDirty = true
+  if (e.ctrlKey || e.metaKey) {
+    zoom(vp, e.deltaY > 0 ? 1.2 : 0.8, candles); chartDirty = true; lastInteraction = performance.now()
+  } else {
+    pendingScroll += e.deltaY > 0 ? 3 : -3
+    if (!scrollTimer) {
+      scrollTimer = window.setTimeout(() => {
+        pan(vp, pendingScroll, candles); pendingScroll = 0; scrollTimer = 0
+        chartDirty = true; lastInteraction = performance.now()
+      }, 30)
+    }
+  }
 }, { passive: false })
 
 let mouseCol = -1, mouseRow = -1
 artEl.addEventListener('mousemove', (e: MouseEvent) => {
-  const newCol = Math.floor(e.clientX / (window.innerWidth / COLS))
-  const newRow = Math.floor(e.clientY / lineHeight)
-  if (newCol !== mouseCol || newRow !== mouseRow) { mouseCol = newCol; mouseRow = newRow; chartDirty = true }
+  mouseCol = Math.floor(e.clientX / (window.innerWidth / COLS))
+  mouseRow = Math.floor(e.clientY / lineHeight)
+  chartDirty = true; lastInteraction = performance.now()
 })
 artEl.addEventListener('mouseleave', () => { mouseCol = -1; mouseRow = -1; chartDirty = true })
 
 setInterval(() => { chartDirty = true }, 2000)
 
-// --- Render loop ---
+// --- Render loop (canvas-based — no innerHTML!) ---
 let fc = 0, lastFps = 0, dispFps = 0
-let lastAnimTime = 0
-const ANIM_INTERVAL = 120 // ms between animation ticks
 
 function render(now: number): void {
   requestAnimationFrame(render)
   if (COLS === 0 || candles.length === 0) return
 
-  // Re-render chart canvas only when data changes
+  // Re-render chart data when dirty
   if (chartDirty) {
     chartDirty = false
-    renderChartToCanvas(chartCanvas, chartCtx, candles, vp, sma20, sma50, rsi14, orderBook, mouseCol, mouseRow, 0, 0)
+    const isInteracting = (now - lastInteraction) < 200
+    renderChartToCanvas(chartCanvas, chartCtx, candles, vp, sma20, sma50, rsi14, orderBook, mouseCol, mouseRow, 0, 0, !isInteracting)
     readCanvasToGrid(chartCtx, pixelGrid)
     cachedAxisLabels = buildAxisLabels()
+    if (isInteracting && !glowPending) {
+      glowPending = true
+      setTimeout(() => { glowPending = false; chartDirty = true }, 300)
+    }
   }
 
-  // Animation tick
-  if (now - lastAnimTime < ANIM_INTERVAL) return
-  lastAnimTime = now
+  // Advance animation
   animFrame++
-
-  // Advance background flow field
   const t = now / 1000
-  updateFlowField(flow, t)
+  if (COLS * ROWS <= 25000) updateFlowField(flow, t)
 
-  // Render with animated characters + flow background
-  renderPixelGrid(pixelGrid, rowEls, lookups, currentFontSize, cachedAxisLabels, animFrame, flow)
+  // Render text to visible canvas — fast! No DOM manipulation
+  renderToCanvas(displayCanvas, displayCtx, pixelGrid, charLookup, currentFontSize, lineHeight, cachedAxisLabels, animFrame, flow)
 
   // Stats
   fc++

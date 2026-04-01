@@ -53,12 +53,15 @@ export function renderPixelGrid(
   axisLabels: Map<string, string>,
   animFrame: number,
   flow: FlowField,
+  startRow: number = 0,
+  endRow?: number,
 ): void {
   const spW = spaceWidth(fontSize)
   const { cols, rows, brightness, colorIdx } = grid
   const rowWidths: number[] = []
+  const rEnd = Math.min(endRow ?? rows, rows, rowEls.length)
 
-  for (let r = 0; r < rows && r < rowEls.length; r++) {
+  for (let r = startRow; r < rEnd; r++) {
     const rowOffset = r * cols
     let html = ''
     let tw = 0
@@ -108,10 +111,12 @@ export function renderPixelGrid(
     rowWidths.push(tw)
   }
 
-  // Center rows
-  const maxW = Math.max(...rowWidths)
-  const blockOffset = Math.max(0, (window.innerWidth - maxW) / 2)
-  for (let r = 0; r < rowEls.length && r < rowWidths.length; r++) {
-    rowEls[r]!.style.paddingLeft = blockOffset + (maxW - rowWidths[r]!) / 2 + 'px'
+  // Center rows (only the ones we rendered)
+  if (rowWidths.length > 0) {
+    const maxW = Math.max(...rowWidths)
+    const blockOffset = Math.max(0, (window.innerWidth - maxW) / 2)
+    for (let i = 0; i < rowWidths.length; i++) {
+      rowEls[startRow + i]!.style.paddingLeft = blockOffset + (maxW - rowWidths[i]!) / 2 + 'px'
+    }
   }
 }

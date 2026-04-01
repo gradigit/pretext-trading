@@ -59,11 +59,12 @@ export function renderChartToCanvas(
   orderBook: OrderBook | null,
   mouseCol: number,
   mouseRow: number,
-  screenW: number,
-  screenH: number,
+  _screenW: number,
+  _screenH: number,
+  enableGlow: boolean = true,
 ): void {
-  // Render at 3× grid resolution — excellent quality, fast downsampling
-  const SCALE = 3
+  // Render at 2× grid resolution — fast with decent anti-aliasing
+  const SCALE = 2
   const w = vp.cols * SCALE
   const h = vp.rows * SCALE
   if (canvas.width !== w) canvas.width = w
@@ -186,16 +187,18 @@ export function renderChartToCanvas(
     renderOrderBook(ctx, orderBook, vp, cellW, cellH)
   }
 
-  // --- Glow pass: blur then additive blend for soft glow ---
-  const [glowCvs, glowCtx2] = getGlowCanvas(canvas.width, canvas.height)
-  glowCtx2.filter = `blur(${SCALE}px)`
-  glowCtx2.drawImage(canvas, 0, 0)
-  glowCtx2.filter = 'none'
-  ctx.globalCompositeOperation = 'lighter'
-  ctx.globalAlpha = 0.3
-  ctx.drawImage(glowCvs, 0, 0)
-  ctx.globalAlpha = 1.0
-  ctx.globalCompositeOperation = 'source-over'
+  // --- Glow pass: blur then additive blend (skip during fast interaction) ---
+  if (enableGlow) {
+    const [glowCvs, glowCtx2] = getGlowCanvas(canvas.width, canvas.height)
+    glowCtx2.filter = `blur(${SCALE + 1}px)`
+    glowCtx2.drawImage(canvas, 0, 0)
+    glowCtx2.filter = 'none'
+    ctx.globalCompositeOperation = 'lighter'
+    ctx.globalAlpha = 0.35
+    ctx.drawImage(glowCvs, 0, 0)
+    ctx.globalAlpha = 1.0
+    ctx.globalCompositeOperation = 'source-over'
+  }
 
   // --- Crosshair ---
   if (mouseCol >= vp.chartColStart && mouseCol < vp.chartColEnd &&
@@ -333,8 +336,8 @@ function renderOrderBook(
   }
 }
 
-// --- Downsample 3x canvas to character grid ---
-const SCALE = 3
+// --- Downsample canvas to character grid ---
+const SCALE = 2
 
 export function readCanvasToGrid(
   ctx: CanvasRenderingContext2D,

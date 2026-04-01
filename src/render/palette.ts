@@ -63,9 +63,9 @@ export type PaletteEntry = {
 
 export function getResponsiveFontSize(): number {
   const w = window.innerWidth
-  if (w <= 600) return 5
-  if (w <= 1024) return 6
-  return 8
+  if (w <= 600) return 6
+  if (w <= 1024) return 7
+  return 9
 }
 
 export function getLineHeight(fontSize: number): number {
