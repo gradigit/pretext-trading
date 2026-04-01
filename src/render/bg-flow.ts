@@ -47,6 +47,9 @@ export function updateFlowField(field: FlowField, t: number): void {
   const { cols, rows, density, temp, aspect } = field
   const aspect2 = aspect * aspect
 
+  // Skip on very small grids (mobile perf)
+  if (cols * rows > 30000) return
+
   // Advection — move density along velocity field
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {

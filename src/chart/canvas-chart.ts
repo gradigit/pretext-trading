@@ -13,8 +13,8 @@ const MA1_COLOR = '#44aaff'
 const MA2_COLOR = '#ffaa00'
 const GRID_COLOR = 'rgba(90,90,160,0.30)'
 const BG_COLOR = '#060610'
-const BOOK_BID = '#005520'
-const BOOK_ASK = '#550815'
+const BOOK_BID = '#00aa40'
+const BOOK_ASK = '#cc2244'
 const XHAIR_COLOR = 'rgba(200,200,255,0.5)'
 const RSI_BULL = '#00cc44'
 const RSI_BEAR = '#ee2244'
@@ -36,6 +36,16 @@ export function createPixelGrid(cols: number, rows: number): PixelGrid {
     colorIdx: new Uint8Array(cols * rows),
     cols, rows,
   }
+}
+
+// Cached glow canvas
+let _glowCvs: HTMLCanvasElement | null = null
+let _glowCtx: CanvasRenderingContext2D | null = null
+function getGlowCanvas(w: number, h: number): [HTMLCanvasElement, CanvasRenderingContext2D] {
+  if (!_glowCvs) { _glowCvs = document.createElement('canvas'); _glowCtx = _glowCvs.getContext('2d')! }
+  if (_glowCvs.width !== w) _glowCvs.width = w
+  if (_glowCvs.height !== h) _glowCvs.height = h
+  return [_glowCvs, _glowCtx!]
 }
 
 export function renderChartToCanvas(
@@ -176,6 +186,17 @@ export function renderChartToCanvas(
     renderOrderBook(ctx, orderBook, vp, cellW, cellH)
   }
 
+  // --- Glow pass: blur then additive blend for soft glow ---
+  const [glowCvs, glowCtx2] = getGlowCanvas(canvas.width, canvas.height)
+  glowCtx2.filter = `blur(${SCALE}px)`
+  glowCtx2.drawImage(canvas, 0, 0)
+  glowCtx2.filter = 'none'
+  ctx.globalCompositeOperation = 'lighter'
+  ctx.globalAlpha = 0.3
+  ctx.drawImage(glowCvs, 0, 0)
+  ctx.globalAlpha = 1.0
+  ctx.globalCompositeOperation = 'source-over'
+
   // --- Crosshair ---
   if (mouseCol >= vp.chartColStart && mouseCol < vp.chartColEnd &&
       mouseRow >= 0 && mouseRow < vp.rsiRowEnd) {
@@ -312,9 +333,8 @@ function renderOrderBook(
   }
 }
 
-// --- Downsample 3x canvas to character grid with error diffusion ---
+// --- Downsample 3x canvas to character grid ---
 const SCALE = 3
-const QUANT_LEVELS = 20 // quantize brightness to this many steps for dithering
 
 export function readCanvasToGrid(
   ctx: CanvasRenderingContext2D,
@@ -324,9 +344,6 @@ export function readCanvasToGrid(
   const sw = cols * SCALE
   const sh = rows * SCALE
   const imgData = ctx.getImageData(0, 0, sw, sh).data
-
-  // Error diffusion buffer (Floyd-Steinberg)
-  const errBuf = new Float32Array(cols * rows)
 
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
@@ -347,26 +364,12 @@ export function readCanvasToGrid(
       const bb = bSum / n
 
       const i = r * cols + c
-      // Perceptual luminance (Rec. 601)
+      // Use max channel for brightness (vivid), luminance for classification
+      const mx = Math.max(rr, gg, bb)
       const lum = 0.299 * rr + 0.587 * gg + 0.114 * bb
-      let rawBrightness = Math.min(1, lum / 155)
+      let rawBrightness = Math.min(1, mx / 180)
 
-      // Add accumulated error from Floyd-Steinberg diffusion
-      rawBrightness = Math.max(0, Math.min(1, rawBrightness + errBuf[i]!))
-
-      // Quantize to discrete levels
-      const quantized = Math.round(rawBrightness * QUANT_LEVELS) / QUANT_LEVELS
-      const quantError = (rawBrightness - quantized) * 0.6 // dampen error spread
-
-      // Distribute error to neighbors (Floyd-Steinberg pattern)
-      if (c + 1 < cols) errBuf[i + 1] += quantError * 7 / 16
-      if (r + 1 < rows) {
-        if (c > 0) errBuf[i + cols - 1] += quantError * 3 / 16
-        errBuf[i + cols] += quantError * 5 / 16
-        if (c + 1 < cols) errBuf[i + cols + 1] += quantError * 1 / 16
-      }
-
-      grid.brightness[i] = quantized
+      grid.brightness[i] = rawBrightness
 
       // Color classification (from raw pixel data, not quantized)
       if (lum < 4) {
