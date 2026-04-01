@@ -1,9 +1,51 @@
 import { prepareWithSegments } from '@chenglou/pretext'
 
-// --- Configuration ---
 export const PROP_FAMILY = 'Georgia, Palatino, "Times New Roman", serif'
-// Dense charset: alphanumeric + symbols + Unicode dots/blocks/shading for dithered look
-const CHARSET = ' .,:;·•°¹²³⁴⁺⁻`\'-_~!|/\\()[]{}?<>^=+*#@%&$£€¥©®™§¶†‡abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789░▒▓█▀▄▌▐─│┌┐└┘├┤┬┴┼━┃╋○●◦◘◙■□▪▫▬▮▯◆◇◈★☆♦♣♠♥∙∘∞≡≈≠±÷×∑∏∫√∂∆∇πΩαβγδεθλμσφψω'
+
+// Maximum Unicode density charset — every useful character for visual texture
+// Organized by visual density category for best gradient coverage
+const CHARSET = [
+  // Minimal ink (dots, periods, commas)
+  ' .·‧∙∘°⋅᛫⁘⁙',
+  // Light marks
+  ',:;\'`\u0027-_~⁻⁺',
+  // Thin strokes
+  '!|/\\()[]{}⟨⟩⌊⌋⌈⌉',
+  // Medium symbols
+  '?<>^=+*÷×±≈≠≡≤≥∓',
+  // Math / Greek (good mid-range density)
+  'πΩαβγδεζηθικλμνξοπρστυφχψω',
+  // Geometric shapes
+  '○●◦◘◙◯◎◉☉⊕⊗⊙⊚⊛',
+  '□■▪▫▬▭▮▯◆◇◈◊♦♣♠♥',
+  '△▲▽▼◁◀▷▶',
+  '★☆✦✧✴✳✶✷✸✹✺✻✼',
+  // Box drawing (crisp lines)
+  '─│┌┐└┘├┤┬┴┼━┃┏┓┗┛┣┫┳┻╋',
+  '╌╍╎╏┄┅┆┇┈┉┊┋',
+  // Block elements (crucial for density)
+  '░▒▓█▀▄▌▐▔▁▂▃▅▆▇',
+  '▖▗▘▙▚▛▜▝▞▟',
+  // Currency & misc symbols
+  '#@%&$£€¥©®™§¶†‡‰‱',
+  // Superscripts & fractions
+  '⁰¹²³⁴⁵⁶⁷⁸⁹⅓⅔⅕⅖⅗⅘⅙⅚⅛⅜⅝⅞',
+  // Alphanumeric (essential mid-range)
+  'abcdefghijklmnopqrstuvwxyz',
+  'ABCDEFGHIJKLMNOPQRSTUVWXYZ',
+  '0123456789',
+  // Arrows (good for flow animation)
+  '←↑→↓↖↗↘↙⇐⇑⇒⇓↩↪↺↻',
+  // Misc technical symbols
+  '⌀⌁⌂⌃⌄⌅⌆⌇⌐⌑⌒⌓⌔⌕⌖',
+  // Musical & misc
+  '♩♪♫♬♯♮♭',
+  // Dingbats
+  '❖❝❞❡❢❣❤❥❦❧',
+  // Braille patterns (select range for subtle dots)
+  '⠁⠂⠃⠄⠅⠆⠇⠈⠉⠊⠋⠌⠍⠎⠏⠐⠑⠒⠓⠔⠕⠖⠗⠘⠙⠚⠛⠜⠝⠞⠟⠠⠡⠢⠣⠤⠥⠦⠧⠨⠩⠪⠫⠬⠭⠮⠯⠰⠱⠲⠳⠴⠵⠶⠷⠸⠹⠺⠻⠼⠽⠾⠿',
+].join('')
+
 const WEIGHTS = [300, 500, 800] as const
 const FONT_STYLES = ['normal', 'italic'] as const
 
@@ -16,7 +58,6 @@ export type PaletteEntry = {
   brightness: number
 }
 
-// Detect responsive font size from CSS — small for high density
 export function getResponsiveFontSize(): number {
   const w = window.innerWidth
   if (w <= 600) return 5
@@ -28,7 +69,7 @@ export function getLineHeight(fontSize: number): number {
   return Math.round(fontSize * 1.21)
 }
 
-// --- Brightness estimation via offscreen canvas ---
+// --- Brightness estimation ---
 const bCvs = document.createElement('canvas')
 bCvs.width = bCvs.height = 28
 const bCtx = bCvs.getContext('2d', { willReadFrequently: true })!
@@ -45,14 +86,19 @@ function estimateBrightness(ch: string, font: string): number {
   return sum / (255 * 784)
 }
 
-// --- Build palette for a given font size ---
 export function buildPalette(fontSize: number): PaletteEntry[] {
   const palette: PaletteEntry[] = []
+  const seen = new Set<string>()
+
   for (const style of FONT_STYLES) {
     for (const weight of WEIGHTS) {
       const font = `${style === 'italic' ? 'italic ' : ''}${weight} ${fontSize}px ${PROP_FAMILY}`
       for (const ch of CHARSET) {
         if (ch === ' ') continue
+        const key = `${ch}_${weight}_${style}`
+        if (seen.has(key)) continue
+        seen.add(key)
+
         const p = prepareWithSegments(ch, font)
         const width = p.widths.length > 0 ? p.widths[0]! : 0
         if (width <= 0) continue
@@ -81,19 +127,35 @@ export function findBest(palette: PaletteEntry[], targetB: number, targetW: numb
   for (let i = Math.max(0, lo - 15); i < Math.min(palette.length, lo + 15); i++) {
     const p = palette[i]!
     const score = Math.abs(p.brightness - targetB) * 2.5 + Math.abs(p.width - targetW) / targetW
-    if (score < bestScore) {
-      bestScore = score
-      best = p
-    }
+    if (score < bestScore) { bestScore = score; best = p }
   }
   return best
 }
 
-// --- HTML helpers ---
+// Find top N candidates for a brightness level (for animation cycling)
+export function findTopN(palette: PaletteEntry[], targetB: number, targetW: number, n: number): PaletteEntry[] {
+  let lo = 0, hi = palette.length - 1
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (palette[mid]!.brightness < targetB) lo = mid + 1
+    else hi = mid
+  }
+
+  const candidates: { entry: PaletteEntry; score: number }[] = []
+  for (let i = Math.max(0, lo - 20); i < Math.min(palette.length, lo + 20); i++) {
+    const p = palette[i]!
+    const score = Math.abs(p.brightness - targetB) * 2.5 + Math.abs(p.width - targetW) / targetW
+    candidates.push({ entry: p, score })
+  }
+  candidates.sort((a, b) => a.score - b.score)
+  return candidates.slice(0, n).map(c => c.entry)
+}
+
 export function esc(c: string): string {
   if (c === '&') return '&amp;'
   if (c === '<') return '&lt;'
   if (c === '>') return '&gt;'
+  if (c === '"') return '&quot;'
   return c
 }
 
@@ -102,5 +164,4 @@ export function wCls(w: number, s: string): string {
   return s === 'italic' ? wc + ' it' : wc
 }
 
-// Space width approximation (matches fluid-smoke)
 export const spaceWidth = (fontSize: number) => fontSize * 0.27

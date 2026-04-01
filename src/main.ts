@@ -1,5 +1,5 @@
 import { buildPalette, getResponsiveFontSize, getLineHeight } from './render/palette.ts'
-import { renderPixelGrid, buildLookupTables } from './render/renderer.ts'
+import { renderPixelGrid, buildAnimLookupTables, createRainState, advanceRain, type RainState } from './render/renderer.ts'
 import { createViewport, pan, zoom, updatePriceRange } from './chart/viewport.ts'
 import { renderChartToCanvas, readCanvasToGrid, createPixelGrid, type PixelGrid } from './chart/canvas-chart.ts'
 import { fetchCandles, subscribeKlines } from './data/feed.ts'
@@ -31,7 +31,7 @@ const artEl = document.getElementById('art')!
 const statsEl = document.getElementById('stats')!
 const controlsEl = document.getElementById('controls')!
 
-// --- Hidden canvas for chart rendering ---
+// --- Hidden canvas ---
 const chartCanvas = document.createElement('canvas')
 const chartCtx = chartCanvas.getContext('2d', { willReadFrequently: true })!
 
@@ -57,17 +57,19 @@ function recomputeIndicators() {
   rsi14 = rsi(candles, 14)
 }
 
-// --- Lookup tables + pixel grid (pre-allocated) ---
-let lookups = buildLookupTables(palette, 8, currentFontSize)
+// --- Animated lookup tables + pixel grid ---
+let lookups = buildAnimLookupTables(palette, 8, currentFontSize)
 let lastTargetCellW = 0
 let pixelGrid: PixelGrid = createPixelGrid(1, 1)
+let rain: RainState = createRainState(1)
 
 // --- Grid ---
 let avgCharW = palette.reduce((s, p) => s + p.width, 0) / palette.length
 let COLS = 0, ROWS = 0
 let rowEls: HTMLDivElement[] = []
 let vp = createViewport(0, 0, candles)
-let dirty = true
+let chartDirty = true  // chart data changed — re-render canvas
+let animFrame = 0
 
 function initGrid() {
   const newFontSize = getResponsiveFontSize()
@@ -83,11 +85,12 @@ function initGrid() {
 
   const newTargetCellW = window.innerWidth / COLS
   if (Math.abs(newTargetCellW - lastTargetCellW) > 0.5) {
-    lookups = buildLookupTables(palette, newTargetCellW, currentFontSize)
+    lookups = buildAnimLookupTables(palette, newTargetCellW, currentFontSize)
     lastTargetCellW = newTargetCellW
   }
 
   pixelGrid = createPixelGrid(COLS, ROWS)
+  rain = createRainState(COLS)
   vp = createViewport(COLS, ROWS, candles)
 
   artEl.innerHTML = ''
@@ -99,10 +102,12 @@ function initGrid() {
     artEl.appendChild(div)
     rowEls.push(div)
   }
-  dirty = true
+  chartDirty = true
 }
 
-// --- Axis labels (rendered as text overlay on the pixel grid) ---
+// --- Axis labels ---
+let cachedAxisLabels: Map<string, string> = new Map()
+
 function buildAxisLabels(): Map<string, string> {
   const labels = new Map<string, string>()
   const end = Math.min(vp.startIndex + vp.visibleCount, candles.length)
@@ -110,7 +115,6 @@ function buildAxisLabels(): Map<string, string> {
   const priceRange = vp.priceMax - vp.priceMin
   const isNarrow = COLS < 80
 
-  // Price labels
   const labelCount = Math.max(2, Math.min(8, Math.floor(chartRows / 10)))
   const priceStep = priceRange / labelCount
   const mag = Math.pow(10, Math.floor(Math.log10(priceStep)))
@@ -128,7 +132,6 @@ function buildAxisLabels(): Map<string, string> {
     }
   }
 
-  // Time labels
   const timeLabelInterval = Math.max(1, Math.ceil(14 / vp.colsPerCandle))
   const timeRow = Math.min(vp.volumeRowEnd + 1, ROWS - 2)
   let lastEnd = -1
@@ -144,14 +147,11 @@ function buildAxisLabels(): Map<string, string> {
     if (start <= lastEnd + 1) continue
     for (let j = 0; j < label.length; j++) {
       const c = start + j
-      if (c >= 0 && c < COLS && timeRow < ROWS) {
-        labels.set(`${timeRow},${c}`, label[j]!)
-      }
+      if (c >= 0 && c < COLS && timeRow < ROWS) labels.set(`${timeRow},${c}`, label[j]!)
     }
     lastEnd = start + label.length
   }
 
-  // RSI labels
   if (vp.showRsi) {
     const panelH = vp.rsiRowEnd - vp.rsiRowStart
     const row70 = vp.rsiRowStart + Math.floor((1 - 70 / 100) * panelH)
@@ -190,13 +190,13 @@ async function loadData() {
       }
       recomputeIndicators()
       updatePriceRange(vp, candles)
-      dirty = true
+      chartDirty = true
     })
   } catch { /* offline */ }
 
   try {
     orderBook = await fetchOrderBook(currentPair.symbol, 20)
-    unsubBook = subscribeOrderBook(currentPair.symbol, (book) => { orderBook = book; dirty = true })
+    unsubBook = subscribeOrderBook(currentPair.symbol, (book) => { orderBook = book; chartDirty = true })
   } catch { orderBook = null }
 }
 
@@ -246,7 +246,7 @@ window.addEventListener('wheel', (e) => {
   } else {
     pan(vp, e.deltaY > 0 ? 3 : -3, candles)
   }
-  dirty = true
+  chartDirty = true
 }, { passive: false })
 
 // --- Crosshair ---
@@ -256,35 +256,42 @@ artEl.addEventListener('mousemove', (e: MouseEvent) => {
   const newCol = Math.floor(e.clientX / (window.innerWidth / COLS))
   const newRow = Math.floor(e.clientY / lineHeight)
   if (newCol !== mouseCol || newRow !== mouseRow) {
-    mouseCol = newCol; mouseRow = newRow; dirty = true
+    mouseCol = newCol; mouseRow = newRow; chartDirty = true
   }
 })
-artEl.addEventListener('mouseleave', () => { mouseCol = -1; mouseRow = -1; dirty = true })
+artEl.addEventListener('mouseleave', () => { mouseCol = -1; mouseRow = -1; chartDirty = true })
 
-// Periodic refresh for live data
-setInterval(() => { dirty = true }, 2000)
+// Periodic chart refresh for live data
+setInterval(() => { chartDirty = true }, 2000)
 
-// --- Render ---
+// --- Render loop (always runs for animation) ---
 let fc = 0, lastFps = 0, dispFps = 0
+let lastAnimTime = 0
+const ANIM_INTERVAL = 150 // ms between character cycles
 
 function render(now: number): void {
-  if (COLS === 0 || candles.length === 0) { requestAnimationFrame(render); return }
-  if (!dirty) { requestAnimationFrame(render); return }
-  dirty = false
+  requestAnimationFrame(render)
+  if (COLS === 0 || candles.length === 0) return
 
-  const targetCellW = window.innerWidth / COLS
+  // Only re-render chart canvas when data changes
+  if (chartDirty) {
+    chartDirty = false
+    renderChartToCanvas(chartCanvas, chartCtx, candles, vp, sma20, sma50, rsi14, orderBook, mouseCol, mouseRow, 0, 0)
+    readCanvasToGrid(chartCtx, pixelGrid)
+    cachedAxisLabels = buildAxisLabels()
+  }
 
-  // 1. Render chart to hidden canvas at 3× grid resolution
-  renderChartToCanvas(chartCanvas, chartCtx, candles, vp, sma20, sma50, rsi14, orderBook, mouseCol, mouseRow, 0, 0)
+  // Animation tick — advance rain and cycle characters
+  const shouldAnimate = now - lastAnimTime > ANIM_INTERVAL
+  if (!shouldAnimate) return
+  lastAnimTime = now
+  animFrame++
 
-  // 2. Downsample 3× canvas to character grid
-  readCanvasToGrid(chartCtx, pixelGrid)
+  // Advance matrix rain
+  advanceRain(rain, ROWS)
 
-  // 3. Build axis labels
-  const axisLabels = buildAxisLabels()
-
-  // 4. Convert to text and render (uses lookup tables — no findBest in hot path)
-  renderPixelGrid(pixelGrid, rowEls, lookups, currentFontSize, axisLabels)
+  // Render text with animated characters + rain
+  renderPixelGrid(pixelGrid, rowEls, lookups, currentFontSize, cachedAxisLabels, animFrame, rain)
 
   // Stats
   fc++
@@ -297,8 +304,6 @@ function render(now: number): void {
     const rsiStr = rsiVal !== null ? ` RSI ${rsiVal.toFixed(1)}` : ''
     statsEl.textContent = `${currentPair.label} ${currentInterval.label} | ${priceStr} |${rsiStr} | ${COLS}×${ROWS} | ${dispFps} fps`
   }
-
-  requestAnimationFrame(render)
 }
 
 // --- Start ---
