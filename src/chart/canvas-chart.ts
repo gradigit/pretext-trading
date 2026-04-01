@@ -312,8 +312,9 @@ function renderOrderBook(
   }
 }
 
-// --- Downsample 3x canvas to character grid ---
+// --- Downsample 3x canvas to character grid with error diffusion ---
 const SCALE = 3
+const QUANT_LEVELS = 20 // quantize brightness to this many steps for dithering
 
 export function readCanvasToGrid(
   ctx: CanvasRenderingContext2D,
@@ -323,6 +324,9 @@ export function readCanvasToGrid(
   const sw = cols * SCALE
   const sh = rows * SCALE
   const imgData = ctx.getImageData(0, 0, sw, sh).data
+
+  // Error diffusion buffer (Floyd-Steinberg)
+  const errBuf = new Float32Array(cols * rows)
 
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
@@ -343,10 +347,29 @@ export function readCanvasToGrid(
       const bb = bSum / n
 
       const i = r * cols + c
-      const mx = Math.max(rr, gg, bb)
-      grid.brightness[i] = mx / 255
+      // Perceptual luminance (Rec. 601)
+      const lum = 0.299 * rr + 0.587 * gg + 0.114 * bb
+      let rawBrightness = Math.min(1, lum / 155)
 
-      if (mx < 6) {
+      // Add accumulated error from Floyd-Steinberg diffusion
+      rawBrightness = Math.max(0, Math.min(1, rawBrightness + errBuf[i]!))
+
+      // Quantize to discrete levels
+      const quantized = Math.round(rawBrightness * QUANT_LEVELS) / QUANT_LEVELS
+      const quantError = (rawBrightness - quantized) * 0.6 // dampen error spread
+
+      // Distribute error to neighbors (Floyd-Steinberg pattern)
+      if (c + 1 < cols) errBuf[i + 1] += quantError * 7 / 16
+      if (r + 1 < rows) {
+        if (c > 0) errBuf[i + cols - 1] += quantError * 3 / 16
+        errBuf[i + cols] += quantError * 5 / 16
+        if (c + 1 < cols) errBuf[i + cols + 1] += quantError * 1 / 16
+      }
+
+      grid.brightness[i] = quantized
+
+      // Color classification (from raw pixel data, not quantized)
+      if (lum < 4) {
         grid.colorIdx[i] = 0
       } else if (gg > rr * 1.2 && gg > bb * 1.2) {
         grid.colorIdx[i] = 1 // bull
@@ -356,7 +379,7 @@ export function readCanvasToGrid(
         grid.colorIdx[i] = 4 // ma1
       } else if (rr > bb * 1.2 && gg > bb * 1.1 && rr > 35) {
         grid.colorIdx[i] = 5 // ma2
-      } else if (mx > 15) {
+      } else if (lum > 8) {
         grid.colorIdx[i] = 3 // grid
       } else {
         grid.colorIdx[i] = 0
