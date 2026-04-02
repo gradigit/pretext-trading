@@ -61,11 +61,12 @@ export type PaletteEntry = {
   brightness: number
 }
 
+// Font sizes tuned so grid stays at ~16K cells (fluid-smoke's proven 60fps sweet spot)
 export function getResponsiveFontSize(): number {
   const w = window.innerWidth
-  if (w <= 600) return 6
-  if (w <= 1024) return 7
-  return 9
+  if (w <= 600) return 7
+  if (w <= 1024) return 9
+  return 12
 }
 
 export function getLineHeight(fontSize: number): number {

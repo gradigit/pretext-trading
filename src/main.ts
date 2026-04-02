@@ -1,5 +1,5 @@
 import { buildPalette, getResponsiveFontSize, getLineHeight } from './render/palette.ts'
-import { buildCharLookup, renderToCanvas, type CharLookup } from './render/canvas-text-renderer.ts'
+import { buildAnimLookup, renderToDOM, measureFlowChars } from './render/pretext-renderer.ts'
 import { createViewport, pan, zoom, updatePriceRange } from './chart/viewport.ts'
 import { renderChartToCanvas, readCanvasToGrid, createPixelGrid, type PixelGrid } from './chart/canvas-chart.ts'
 import { createFlowField, updateFlowField, type FlowField } from './render/bg-flow.ts'
@@ -27,22 +27,15 @@ const artEl = document.getElementById('art')!
 const statsEl = document.getElementById('stats')!
 const controlsEl = document.getElementById('controls')!
 
-// --- Display canvas (visible — replaces innerHTML divs) ---
-const displayCanvas = document.createElement('canvas')
-displayCanvas.style.width = '100%'
-displayCanvas.style.height = '100%'
-displayCanvas.style.display = 'block'
-artEl.appendChild(displayCanvas)
-const displayCtx = displayCanvas.getContext('2d')!
-
-// --- Hidden chart canvas ---
+// Hidden chart canvas (renders chart geometry)
 const chartCanvas = document.createElement('canvas')
 const chartCtx = chartCanvas.getContext('2d', { willReadFrequently: true })!
 
-// --- Palette ---
+// --- Palette (pretext-powered) ---
 let currentFontSize = getResponsiveFontSize()
 let lineHeight = getLineHeight(currentFontSize)
-let palette = buildPalette(currentFontSize)
+let palette = buildPalette(currentFontSize) // uses prepareWithSegments for width measurement
+measureFlowChars(currentFontSize)
 
 // --- Data ---
 let candles: Candle[] = []
@@ -61,10 +54,11 @@ function recomputeIndicators() {
 
 // --- Rendering state ---
 let avgCharW = palette.reduce((s, p) => s + p.width, 0) / palette.length
-let charLookup: CharLookup = buildCharLookup(palette, 8)
+let lookups = buildAnimLookup(palette, 8, currentFontSize)
 let pixelGrid: PixelGrid = createPixelGrid(1, 1)
 let flow: FlowField = createFlowField(1, 1, 0.6)
 let COLS = 0, ROWS = 0
+let rowEls: HTMLDivElement[] = []
 let vp = createViewport(0, 0, candles)
 let chartDirty = true
 let animFrame = 0
@@ -77,18 +71,30 @@ function initGrid() {
     currentFontSize = newFontSize
     lineHeight = getLineHeight(currentFontSize)
     palette = buildPalette(currentFontSize)
+    measureFlowChars(currentFontSize)
     avgCharW = palette.reduce((s, p) => s + p.width, 0) / palette.length
   }
 
-  COLS = Math.min(380, Math.floor(window.innerWidth / avgCharW))
-  ROWS = Math.min(160, Math.floor(window.innerHeight / lineHeight))
+  // Target ~16K cells (fluid-smoke's proven 60fps sweet spot)
+  COLS = Math.min(250, Math.floor(window.innerWidth / avgCharW))
+  ROWS = Math.min(90, Math.floor(window.innerHeight / lineHeight))
 
   const targetCellW = window.innerWidth / COLS
-  charLookup = buildCharLookup(palette, targetCellW)
+  lookups = buildAnimLookup(palette, targetCellW, currentFontSize)
   pixelGrid = createPixelGrid(COLS, ROWS)
-  const aspect = avgCharW / lineHeight
-  flow = createFlowField(COLS, ROWS, aspect)
+  flow = createFlowField(COLS, ROWS, avgCharW / lineHeight)
   vp = createViewport(COLS, ROWS, candles)
+
+  // Create row divs (fluid-smoke pattern)
+  artEl.innerHTML = ''
+  rowEls = []
+  for (let r = 0; r < ROWS; r++) {
+    const div = document.createElement('div')
+    div.className = 'r'
+    div.style.height = div.style.lineHeight = lineHeight + 'px'
+    artEl.appendChild(div)
+    rowEls.push(div)
+  }
   chartDirty = true
 }
 
@@ -156,11 +162,9 @@ function buildAxisLabels(): Map<string, string> {
 async function loadData() {
   if (unsubKline) { unsubKline(); unsubKline = null }
   if (unsubBook) { unsubBook(); unsubBook = null }
-  try {
-    candles = await fetchCandles(currentPair.symbol, currentInterval.interval, 500)
-  } catch { candles = generateSampleData(500) }
-  recomputeIndicators()
-  initGrid()
+  try { candles = await fetchCandles(currentPair.symbol, currentInterval.interval, 500) }
+  catch { candles = generateSampleData(500) }
+  recomputeIndicators(); initGrid()
   try {
     unsubKline = subscribeKlines(currentPair.symbol, currentInterval.interval, (candle, isClosed) => {
       if (candles.length === 0) return
@@ -205,44 +209,35 @@ function buildControls() {
 let resizeTimer = 0
 window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = window.setTimeout(initGrid, 150) })
 
-let pendingScroll = 0, scrollTimer = 0
 window.addEventListener('wheel', (e) => {
   e.preventDefault()
-  if (e.ctrlKey || e.metaKey) {
-    zoom(vp, e.deltaY > 0 ? 1.2 : 0.8, candles); chartDirty = true; lastInteraction = performance.now()
-  } else {
-    pendingScroll += e.deltaY > 0 ? 3 : -3
-    if (!scrollTimer) {
-      scrollTimer = window.setTimeout(() => {
-        pan(vp, pendingScroll, candles); pendingScroll = 0; scrollTimer = 0
-        chartDirty = true; lastInteraction = performance.now()
-      }, 30)
-    }
-  }
+  if (e.ctrlKey || e.metaKey) zoom(vp, e.deltaY > 0 ? 1.2 : 0.8, candles)
+  else pan(vp, e.deltaY > 0 ? 3 : -3, candles)
+  chartDirty = true; lastInteraction = performance.now()
 }, { passive: false })
 
 let mouseCol = -1, mouseRow = -1
 artEl.addEventListener('mousemove', (e: MouseEvent) => {
   mouseCol = Math.floor(e.clientX / (window.innerWidth / COLS))
   mouseRow = Math.floor(e.clientY / lineHeight)
-  chartDirty = true; lastInteraction = performance.now()
+  // Don't set chartDirty — crosshair is applied to pixel grid directly, no canvas re-render needed
 })
-artEl.addEventListener('mouseleave', () => { mouseCol = -1; mouseRow = -1; chartDirty = true })
+artEl.addEventListener('mouseleave', () => { mouseCol = -1; mouseRow = -1 })
 
 setInterval(() => { chartDirty = true }, 2000)
 
-// --- Render loop (canvas-based — no innerHTML!) ---
+// --- Render loop ---
 let fc = 0, lastFps = 0, dispFps = 0
 
 function render(now: number): void {
   requestAnimationFrame(render)
   if (COLS === 0 || candles.length === 0) return
 
-  // Re-render chart data when dirty
+  // Chart data → hidden canvas → pixel grid (only when dirty)
   if (chartDirty) {
     chartDirty = false
     const isInteracting = (now - lastInteraction) < 200
-    renderChartToCanvas(chartCanvas, chartCtx, candles, vp, sma20, sma50, rsi14, orderBook, mouseCol, mouseRow, 0, 0, !isInteracting)
+    renderChartToCanvas(chartCanvas, chartCtx, candles, vp, sma20, sma50, rsi14, orderBook, -1, -1, 0, 0, !isInteracting)
     readCanvasToGrid(chartCtx, pixelGrid)
     cachedAxisLabels = buildAxisLabels()
     if (isInteracting && !glowPending) {
@@ -251,13 +246,19 @@ function render(now: number): void {
     }
   }
 
-  // Advance animation
+  // Animation — advance every frame, but only cycle chars every N frames
   animFrame++
-  const t = now / 1000
-  if (COLS * ROWS <= 25000) updateFlowField(flow, t)
+  const shouldCycleChars = (animFrame % 8) === 0 // cycle chars every 8 frames (~4-8Hz at 30-60fps)
 
-  // Render text to visible canvas — fast! No DOM manipulation
-  renderToCanvas(displayCanvas, displayCtx, pixelGrid, charLookup, currentFontSize, lineHeight, cachedAxisLabels, animFrame, flow)
+  // Flow field (only on small grids, every few frames)
+  if ((animFrame % 4) === 0 && COLS * ROWS <= 20000) {
+    updateFlowField(flow, now / 1000)
+  }
+
+  // Render to DOM using pretext-measured character widths + paddingLeft centering
+  // Crosshair passed as coordinates — renderer handles it without modifying pixel grid
+  const charPhase = Math.floor(animFrame / 8)
+  renderToDOM(pixelGrid, rowEls, lookups, currentFontSize, cachedAxisLabels, charPhase, flow, mouseCol, mouseRow, vp)
 
   // Stats
   fc++
